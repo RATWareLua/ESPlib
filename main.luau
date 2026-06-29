@@ -1,11 +1,11 @@
 --!nocheck
 -- Universal ESP Framework - Core (main.luau)
--- Архитектура: Ядро считает математику (3D -> 2D) и управляет объектами. Модули занимаются отрисовкой.
+-- Чистый математический движок проекций. Без привязки к игре.
 
 local ESPLibrary = {
-    Objects = {},
-    Modules = {},
-    Connections = {},
+    Objects = {},       
+    Modules = {},       
+    Connections = {},   
     
     RepoURL = "https://raw.githubusercontent.com/RATWareLua/ESPlib/refs/heads/main/modules/",
     
@@ -13,8 +13,12 @@ local ESPLibrary = {
         Enabled = true,
         MaxDistance = 10000,
         MinBoxSize = 4,
-        BBoxRefreshRate = 3,
         
+        -- Математические примитивы управления размером
+        DynamicSize = 0,       -- 0 = Камерно-ориентированная проекция высоты (Биллборд), 1 = Полный 3D AABB
+        UsePrimaryPart = false,-- Использовать PrimaryPart вместо общего BBox модели
+        SizeOverride = nil,    -- Кастомный Vector3 размер (игнорировать физический размер инстанса)
+        CFrameOffset = nil,    -- Кастомный CFrame оффсет для смещения центра проекции
     }
 }
 
@@ -22,27 +26,18 @@ local Workspace = game:GetService("Workspace")
 local RS = game:GetService("RunService")
 local Camera = Workspace.CurrentCamera
 
--- Оптимизация математики
-local math_min = math.min
 local math_max = math.max
 local math_huge = math.huge
+local math_abs = math.abs
 local V3 = Vector3.new
 
-----------------------------------------------------------------------
--- [ 1. СИСТЕМА МОДУЛЕЙ ]
-----------------------------------------------------------------------
-
--- Загрузка модуля по URL или регистрация уже готовой таблицы
 function ESPLibrary:Import(moduleName, customUrlOrModule)
-    -- Если модуль уже загружен, не грузим дважды
     if self.Modules[moduleName] then return self.Modules[moduleName] end
 
     local moduleTable
-    
     if type(customUrlOrModule) == "table" then
         moduleTable = customUrlOrModule
     else
-        -- Скачиваем через HttpGet
         local url = type(customUrlOrModule) == "string" and customUrlOrModule or (self.RepoURL .. moduleName .. ".luau")
         local ok, result = pcall(function()
             return loadstring(game:HttpGet(url))()
@@ -60,10 +55,6 @@ function ESPLibrary:Import(moduleName, customUrlOrModule)
     return moduleTable
 end
 
-----------------------------------------------------------------------
--- [ 2. УТИЛИТЫ И МАТЕМАТИКА ]
-----------------------------------------------------------------------
-
 local function MergeSettings(default, custom)
     local result = {}
     for k, v in pairs(default) do result[k] = v end
@@ -71,46 +62,93 @@ local function MergeSettings(default, custom)
     return result
 end
 
--- Пересчет вершин BoundingBox (для моделей и партов)
-local function RefreshBBox(espObj)
-    local instance = espObj.Instance
-    if not instance or not instance.Parent then return end
+-- ПРИМИТИВ: Получение чистых координат (CFrame и Size) объекта
+local function GetTargetCFAndSize(instance, settings)
+    if settings.UsePrimaryPart and instance:IsA("Model") then
+        local primary = instance.PrimaryPart or instance:FindFirstChildWhichIsA("BasePart")
+        if primary then
+            return primary.CFrame, primary.Size
+        end
+    end
 
     if instance:IsA("Model") then
-        local ok, cf, size = pcall(function() return instance:GetBoundingBox() end)
-        if ok and cf and size then
-            local primary = instance.PrimaryPart or instance:FindFirstChildWhichIsA("BasePart")
-            if primary then
-                local hx, hy, hz = size.X * 0.5, size.Y * 0.5, size.Z * 0.5
-                espObj.PrimaryPart = primary
-                espObj.BoxOffset = primary.CFrame:ToObjectSpace(cf)
-                espObj.LocalVertices = {
-                    V3( hx,  hy,  hz), V3( hx,  hy, -hz),
-                    V3( hx, -hy,  hz), V3( hx, -hy, -hz),
-                    V3(-hx,  hy,  hz), V3(-hx,  hy, -hz),
-                    V3(-hx, -hy,  hz), V3(-hx, -hy, -hz),
-                }
-                espObj.LastBBoxRefresh = tick()
-            end
-        end
+        local cf, size = instance:GetBoundingBox()
+        return cf, size
     elseif instance:IsA("BasePart") then
-        local size = instance.Size
+        return instance.CFrame, instance.Size
+    end
+    return nil, nil
+end
+
+-- ПРИМИТИВ: Математическая проекция 3D объема на 2D экран
+local function ProjectVolume(camera, cf, size, isStatic, minSize)
+    local camCF = camera.CFrame
+    local x, y, w, h
+    local anyVisible = false
+
+    if isStatic then
+        -- 2D Проекция по высоте (Биллборд, ориентированный на вектор камеры)
+        local camUp = camCF.UpVector
+        local halfHeight = size.Y * 0.5
+        local tp = camera:WorldToViewportPoint(cf.Position + camUp * halfHeight)
+        local bp = camera:WorldToViewportPoint(cf.Position - camUp * halfHeight)
+
+        if tp.Z > 0 and bp.Z > 0 then
+            anyVisible = true
+            local rawH = math_abs(tp.Y - bp.Y)
+            local rawW = rawH / 1.6 -- Соотношение сторон по умолчанию
+            
+            h = math_max(rawH, minSize)
+            w = math_max(rawW, minSize)
+            
+            local cx = (tp.X + bp.X) * 0.5
+            local cy = (tp.Y + bp.Y) * 0.5
+            x = cx - w * 0.5
+            y = cy - h * 0.5
+        end
+    else
+        -- Полная 3D AABB проекция (8 угловых точек)
         local hx, hy, hz = size.X * 0.5, size.Y * 0.5, size.Z * 0.5
-        espObj.PrimaryPart = instance
-        espObj.BoxOffset = CFrame.new()
-        espObj.LocalVertices = {
+        local verts = {
             V3( hx,  hy,  hz), V3( hx,  hy, -hz),
             V3( hx, -hy,  hz), V3( hx, -hy, -hz),
             V3(-hx,  hy,  hz), V3(-hx,  hy, -hz),
             V3(-hx, -hy,  hz), V3(-hx, -hy, -hz),
         }
-        espObj.LastBBoxRefresh = tick() + 999999 -- Парты обычно не меняют размер динамически
-    end
-end
 
-----------------------------------------------------------------------
--- [ 3. УПРАВЛЕНИЕ ОБЪЕКТАМИ ]
-----------------------------------------------------------------------
+        local minX, minY = math_huge, math_huge
+        local maxX, maxY = -math_huge, -math_huge
+        local p
+
+        for i = 1, 8 do
+            p = camera:WorldToViewportPoint(cf * verts[i])
+            if p.Z > 0 then
+                anyVisible = true
+                if p.X < minX then minX = p.X end
+                if p.X > maxX then maxX = p.X end
+                if p.Y < minY then minY = p.Y end
+                if p.Y > maxY then maxY = p.Y end
+            end
+        end
+
+        if anyVisible then
+            local rawW = maxX - minX
+            local rawH = maxY - minY
+            local cx = minX + rawW * 0.5
+            local cy = minY + rawH * 0.5
+            
+            w = math_max(rawW, minSize)
+            h = math_max(rawH, minSize)
+            x = cx - w * 0.5
+            y = cy - h * 0.5
+        end
+    end
+
+    if anyVisible and x then
+        return true, x, y, w, h
+    end
+    return false
+end
 
 function ESPLibrary:Add(instance, customSettings)
     if not instance then return end
@@ -120,16 +158,10 @@ function ESPLibrary:Add(instance, customSettings)
     
     local espObject = {
         Instance = instance,
-        PrimaryPart = nil,
         Settings = settings,
-        Drawings = {},
-        CustomData = {},
-        LocalVertices = nil,
-        BoxOffset = CFrame.new(),
-        LastBBoxRefresh = 0
+        Drawings = {},         
+        CustomData = {}
     }
-    
-    RefreshBBox(espObject)
     
     for modName, module in pairs(self.Modules) do
         if settings[modName] and module.Init then
@@ -160,21 +192,16 @@ function ESPLibrary:Remove(instance)
     end
 end
 
-----------------------------------------------------------------------
--- [ 4. ГЛАВНЫЙ ЦИКЛ РЕНДЕРА ]
-----------------------------------------------------------------------
-
+-- Чистый цикл рендера. Берет примитивы и проецирует их.
 local renderConnection = RS.RenderStepped:Connect(function()
     if not Camera then Camera = Workspace.CurrentCamera return end
     
-    local camCF = Camera.CFrame
-    local camPos = camCF.Position
+    local camPos = Camera.CFrame.Position
 
     for instance, espObj in pairs(ESPLibrary.Objects) do
         local settings = espObj.Settings
-        local primary = espObj.PrimaryPart
 
-        if not instance or not instance.Parent or not primary or not primary.Parent or not settings.Enabled then
+        if not instance or not instance.Parent or not settings.Enabled then
             for modName, module in pairs(ESPLibrary.Modules) do
                 if settings[modName] and module.Update then
                     module.Update(espObj, { OnScreen = false })
@@ -183,7 +210,20 @@ local renderConnection = RS.RenderStepped:Connect(function()
             continue
         end
 
-        local distance = (primary.Position - camPos).Magnitude
+        -- Шаг 1: Получаем базовые координаты
+        local cf, size = GetTargetCFAndSize(instance, settings)
+        if not cf then continue end
+
+        -- Шаг 2: Применяем кастомные оффсеты и размеры (если переданы)
+        if settings.CFrameOffset then
+            cf = cf * settings.CFrameOffset
+        end
+        if settings.SizeOverride then
+            size = settings.SizeOverride
+        end
+
+        -- Шаг 3: Проверка дистанции
+        local distance = (cf.Position - camPos).Magnitude
         if distance > settings.MaxDistance then
             for modName, module in pairs(ESPLibrary.Modules) do
                 if settings[modName] and module.Update then
@@ -193,50 +233,18 @@ local renderConnection = RS.RenderStepped:Connect(function()
             continue
         end
 
-        if tick() - espObj.LastBBoxRefresh > settings.BBoxRefreshRate then
-            RefreshBBox(espObj)
-        end
+        -- Шаг 4: Математическая проекция
+        local isStatic = (settings.DynamicSize == 0)
+        local success, x, y, w, h = ProjectVolume(Camera, cf, size, isStatic, settings.MinBoxSize)
 
-        local verts = espObj.LocalVertices
-        if not verts then continue end
-
-        local baseCF = espObj.BoxOffset and (primary.CFrame * espObj.BoxOffset) or primary.CFrame
-        local minX, minY = math_huge, math_huge
-        local maxX, maxY = -math_huge, -math_huge
-        local anyVisible = false
-        local p
-
-        for i = 1, 8 do
-            p = Camera:WorldToViewportPoint(baseCF * verts[i])
-            if p.Z > 0 then 
-                anyVisible = true
-                if p.X < minX then minX = p.X end 
-                if p.X > maxX then maxX = p.X end
-                if p.Y < minY then minY = p.Y end 
-                if p.Y > maxY then maxY = p.Y end
-            end
-        end
-
-        if anyVisible then
-            local rawW = maxX - minX
-            local rawH = maxY - minY
-            local cx = minX + rawW * 0.5
-            local cy = minY + rawH * 0.5
-            
-            local w = math_max(rawW, settings.MinBoxSize)
-            local h = math_max(rawH, settings.MinBoxSize)
-            local x = cx - w * 0.5
-            local y = cy - h * 0.5
-            
+        if success then
             local renderData = {
                 OnScreen = true,
                 Distance = distance,
                 X = x,
                 Y = y,
                 W = w,
-                H = h,
-                CX = cx,
-                CY = cy
+                H = h
             }
 
             for modName, module in pairs(ESPLibrary.Modules) do
@@ -256,9 +264,6 @@ local renderConnection = RS.RenderStepped:Connect(function()
 end)
 table.insert(ESPLibrary.Connections, renderConnection)
 
-----------------------------------------------------------------------
--- [ 5. ОЧИСТКА БИБЛИОТЕКИ ]
-----------------------------------------------------------------------
 function ESPLibrary:Destroy()
     for _, conn in ipairs(self.Connections) do
         pcall(function() conn:Disconnect() end)
@@ -270,5 +275,4 @@ function ESPLibrary:Destroy()
     self.Modules = {}
 end
 
--- Возвращаем ядро
 return ESPLibrary
