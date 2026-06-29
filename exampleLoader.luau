@@ -1,27 +1,24 @@
---[[
-paste this shit in you exec
-]]--
-
+--!nocheck
+-- Loader Script with Fixed Per-Player Copying and Logging
 
 local storage = (getgenv and getgenv()) or shared
 if storage.CornerESP_Cleanup then
     pcall(storage.CornerESP_Cleanup)
 end
 
+-- 1. Загрузка математически чистого ядра
 local ESP = loadstring(game:HttpGet("https://raw.githubusercontent.com/RATWareLua/ESPlib/refs/heads/main/main.luau"))()
 
+-- 2. Загрузка модуля
 ESP:Import("CornerBox")
 
--- Настройки воссоздают твой оригинальный статический 2D бокс через примитивы
-local ESP_SETTINGS = {
+-- Базовый неизменяемый шаблон настроек
+local BASE_ESP_SETTINGS = {
     CornerBox       = true,
-    DynamicSize     = 0,                             -- 0 = статика, 1 = динамика (3D AABB)
-    
-    -- ПРИМИТИВЫ: Настраиваем математику под Roblox-персонажей:
-    UsePrimaryPart  = true,                          -- Привязываемся к HRP, а не габаритам аксессуаров
-    SizeOverride    = Vector3.new(4, 6.9, 4),        -- Высота ровно 6.9 студа (3.3 + 3.6)
-    CFrameOffset    = CFrame.new(0, -0.15, 0),       -- Смещаем центр на 0.15 студа вниз для компенсации асимметрии
-    
+    DynamicSize     = 0,                             
+    UsePrimaryPart  = true,                          
+    SizeOverride    = Vector3.new(4, 6.9, 4),        
+    CFrameOffset    = CFrame.new(0, -0.15, 0),       
     BoxColor        = Color3.fromRGB(0, 255, 120),   
     BoxThickness    = 2.5,                           
     BoxTransparency = 1,                             
@@ -29,6 +26,15 @@ local ESP_SETTINGS = {
     MinBoxSize      = 4,                             
     MaxDistance     = 10000,                         
 }
+
+-- Глубокое копирование таблиц для решения Проблемы 10
+local function copyTable(t)
+    local copy = {}
+    for k, v in pairs(t) do
+        copy[k] = type(v) == "table" and copyTable(v) or v
+    end
+    return copy
+end
 
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
@@ -60,7 +66,18 @@ local function AddPlayer(plr)
             pcall(function() track.ActiveESP:Remove() end)
             track.ActiveESP = nil
         end
-        track.ActiveESP = ESP:Add(char, ESP_SETTINGS)
+
+        -- Решение Проблемы 10: Индивидуальная копия настроек для каждого игрока
+        local playerSettings = copyTable(BASE_ESP_SETTINGS)
+        
+        -- Пример гибкой кастомизации под союзников/врагов:
+        if plr.TeamColor == LocalPlayer.TeamColor then
+            playerSettings.BoxColor = Color3.fromRGB(0, 150, 255)  -- Союзники синие
+        else
+            playerSettings.BoxColor = Color3.fromRGB(255, 50, 50)   -- Враги красные
+        end
+
+        track.ActiveESP = ESP:Add(char, playerSettings)
     end
 
     track.CharConn = plr.CharacterAdded:Connect(function(char)
@@ -72,12 +89,19 @@ local function AddPlayer(plr)
     end
 end
 
+-- Решение Проблемы 11: Логирование с варнингом вместо слепого pcall
 for _, plr in ipairs(Players:GetPlayers()) do
-    pcall(AddPlayer, plr)
+    local ok, err = pcall(AddPlayer, plr)
+    if not ok then
+        warn(string.format("[ESP Loader] Ошибка инициализации игрока '%s': %s", plr.Name, tostring(err)))
+    end
 end
 
 local playerAddedConn = Players.PlayerAdded:Connect(function(plr)
-    pcall(AddPlayer, plr)
+    local ok, err = pcall(AddPlayer, plr)
+    if not ok then
+        warn(string.format("[ESP Loader] Ошибка подключения нового игрока '%s': %s", plr.Name, tostring(err)))
+    end
 end)
 table.insert(globalConnections, playerAddedConn)
 
