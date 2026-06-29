@@ -9,7 +9,6 @@ if storage.CornerESP_Cleanup then
 end
 
 local ESP = loadstring(game:HttpGet("https://raw.githubusercontent.com/RATWareLua/ESPlib/refs/heads/main/main.luau"))()
-ESP.RepoURL = "https://raw.githubusercontent.com/RATWareLua/ESPlib/refs/heads/main/modules/"
 
 ESP:Import("CornerBox")
 
