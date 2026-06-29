@@ -1,10 +1,10 @@
 --!nocheck
 -- Universal ESP Framework - Core (main.luau)
--- Чистый математический движок проекций. Без привязки к игре.
 
 local ESPLibrary = {
     Objects = {},       
-    Modules = {},       
+    Modules = {},       -- Хранилище модулей для прямого доступа [имя] -> модуль
+    ModuleOrder = {},   -- Массив {Name, Module} отсортированный по приоритету для детерминированного рендера
     Connections = {},   
     
     RepoURL = "https://raw.githubusercontent.com/RATWareLua/ESPlib/refs/heads/main/modules/",
@@ -13,15 +13,14 @@ local ESPLibrary = {
         Enabled = true,
         MaxDistance = 10000,
         MinBoxSize = 4,
-        
-        -- Математические примитивы управления размером
-        DynamicSize = 0,       -- 0 = Камерно-ориентированная проекция высоты (Биллборд), 1 = Полный 3D AABB
-        UsePrimaryPart = false,-- Использовать PrimaryPart вместо общего BBox модели
-        SizeOverride = nil,    -- Кастомный Vector3 размер (игнорировать физический размер инстанса)
-        CFrameOffset = nil,    -- Кастомный CFrame оффсет для смещения центра проекции
+        DynamicSize = 0,     
+        UsePrimaryPart = false,
+        SizeOverride = nil,    
+        CFrameOffset = nil,    
     }
 }
 
+-- Сервисы
 local Workspace = game:GetService("Workspace")
 local RS = game:GetService("RunService")
 local Camera = Workspace.CurrentCamera
@@ -30,6 +29,16 @@ local math_max = math.max
 local math_huge = math.huge
 local math_abs = math.abs
 local V3 = Vector3.new
+
+-- Локальный хелпер скрытия оффскрин-объектов
+local function dispatchHide(espObj)
+    for _, entry in ipairs(ESPLibrary.ModuleOrder) do
+        local module = entry.Module
+        if espObj.Settings[module.SettingsKey] and module.Update then
+            pcall(module.Update, espObj, { OnScreen = false })
+        end
+    end
+end
 
 function ESPLibrary:Import(moduleName, customUrlOrModule)
     if self.Modules[moduleName] then return self.Modules[moduleName] end
@@ -51,7 +60,30 @@ function ESPLibrary:Import(moduleName, customUrlOrModule)
         end
     end
 
+    -- Гарантируем наличие мета-полей
+    moduleTable.Priority = moduleTable.Priority or 100
+    moduleTable.SettingsKey = moduleTable.SettingsKey or moduleName
+
     self.Modules[moduleName] = moduleTable
+    table.insert(self.ModuleOrder, { Name = moduleName, Module = moduleTable })
+    
+    -- Сортировка модулей по приоритету отрисовки (Z-Index)
+    table.sort(self.ModuleOrder, function(a, b)
+        return a.Module.Priority < b.Module.Priority
+    end)
+
+    -- Решение Проблемы 1: Поздний импорт модулей (Инициализируем модуль на уже созданных объектах)
+    for _, espObj in pairs(self.Objects) do
+        if espObj.Settings[moduleTable.SettingsKey] and not espObj.Drawings[moduleName] then
+            if moduleTable.Init then
+                local ok, err = pcall(moduleTable.Init, espObj)
+                if not ok then
+                    warn(string.format("[ESP Core] Ошибка поздней инициализации '%s' на '%s': %s", moduleName, espObj.Instance.Name, tostring(err)))
+                end
+            end
+        end
+    end
+
     return moduleTable
 end
 
@@ -62,7 +94,6 @@ local function MergeSettings(default, custom)
     return result
 end
 
--- ПРИМИТИВ: Получение чистых координат (CFrame и Size) объекта
 local function GetTargetCFAndSize(instance, settings)
     if settings.UsePrimaryPart and instance:IsA("Model") then
         local primary = instance.PrimaryPart or instance:FindFirstChildWhichIsA("BasePart")
@@ -80,14 +111,12 @@ local function GetTargetCFAndSize(instance, settings)
     return nil, nil
 end
 
--- ПРИМИТИВ: Математическая проекция 3D объема на 2D экран
 local function ProjectVolume(camera, cf, size, isStatic, minSize)
     local camCF = camera.CFrame
     local x, y, w, h
     local anyVisible = false
 
     if isStatic then
-        -- 2D Проекция по высоте (Биллборд, ориентированный на вектор камеры)
         local camUp = camCF.UpVector
         local halfHeight = size.Y * 0.5
         local tp = camera:WorldToViewportPoint(cf.Position + camUp * halfHeight)
@@ -96,7 +125,7 @@ local function ProjectVolume(camera, cf, size, isStatic, minSize)
         if tp.Z > 0 and bp.Z > 0 then
             anyVisible = true
             local rawH = math_abs(tp.Y - bp.Y)
-            local rawW = rawH / 1.6 -- Соотношение сторон по умолчанию
+            local rawW = rawH / 1.6
             
             h = math_max(rawH, minSize)
             w = math_max(rawW, minSize)
@@ -107,7 +136,6 @@ local function ProjectVolume(camera, cf, size, isStatic, minSize)
             y = cy - h * 0.5
         end
     else
-        -- Полная 3D AABB проекция (8 угловых точек)
         local hx, hy, hz = size.X * 0.5, size.Y * 0.5, size.Z * 0.5
         local verts = {
             V3( hx,  hy,  hz), V3( hx,  hy, -hz),
@@ -163,9 +191,15 @@ function ESPLibrary:Add(instance, customSettings)
         CustomData = {}
     }
     
-    for modName, module in pairs(self.Modules) do
-        if settings[modName] and module.Init then
-            pcall(module.Init, espObject)
+    -- Решение Проблемы 4: pcall с выводом ошибок в лог при инициализации
+    for _, entry in ipairs(self.ModuleOrder) do
+        local modName = entry.Name
+        local module = entry.Module
+        if settings[module.SettingsKey] and module.Init then
+            local ok, err = pcall(module.Init, espObject)
+            if not ok then
+                warn(string.format("[ESP Core] Инициализация модуля '%s' упала на '%s': %s", modName, instance.Name, tostring(err)))
+            end
         end
     end
     
@@ -174,7 +208,8 @@ function ESPLibrary:Add(instance, customSettings)
     end
     
     function espObject:Remove()
-        for modName, module in pairs(ESPLibrary.Modules) do
+        for _, entry in ipairs(ESPLibrary.ModuleOrder) do
+            local module = entry.Module
             if module.Destroy then
                 pcall(module.Destroy, self)
             end
@@ -192,87 +227,83 @@ function ESPLibrary:Remove(instance)
     end
 end
 
--- Чистый цикл рендера. Берет примитивы и проецирует их.
-local renderConnection = RS.RenderStepped:Connect(function()
-    if not Camera then Camera = Workspace.CurrentCamera return end
-    
-    local camPos = Camera.CFrame.Position
-
-    for instance, espObj in pairs(ESPLibrary.Objects) do
-        local settings = espObj.Settings
-
-        if not instance or not instance.Parent or not settings.Enabled then
-            for modName, module in pairs(ESPLibrary.Modules) do
-                if settings[modName] and module.Update then
-                    module.Update(espObj, { OnScreen = false })
-                end
-            end
-            continue
-        end
-
-        -- Шаг 1: Получаем базовые координаты
-        local cf, size = GetTargetCFAndSize(instance, settings)
-        if not cf then continue end
-
-        -- Шаг 2: Применяем кастомные оффсеты и размеры (если переданы)
-        if settings.CFrameOffset then
-            cf = cf * settings.CFrameOffset
-        end
-        if settings.SizeOverride then
-            size = settings.SizeOverride
-        end
-
-        -- Шаг 3: Проверка дистанции
-        local distance = (cf.Position - camPos).Magnitude
-        if distance > settings.MaxDistance then
-            for modName, module in pairs(ESPLibrary.Modules) do
-                if settings[modName] and module.Update then
-                    module.Update(espObj, { OnScreen = false })
-                end
-            end
-            continue
-        end
-
-        -- Шаг 4: Математическая проекция
-        local isStatic = (settings.DynamicSize == 0)
-        local success, x, y, w, h = ProjectVolume(Camera, cf, size, isStatic, settings.MinBoxSize)
-
-        if success then
-            local renderData = {
-                OnScreen = true,
-                Distance = distance,
-                X = x,
-                Y = y,
-                W = w,
-                H = h
-            }
-
-            for modName, module in pairs(ESPLibrary.Modules) do
-                if settings[modName] and module.Update then
-                    local ok, err = pcall(module.Update, espObj, renderData)
-                    if not ok then warn(string.format("[ESP Module Error] %s: %s", modName, tostring(err))) end
-                end
-            end
-        else
-            for modName, module in pairs(ESPLibrary.Modules) do
-                if settings[modName] and module.Update then
-                    module.Update(espObj, { OnScreen = false })
-                end
-            end
-        end
+-- Решение Проблемы 5: Контроль жизненного цикла через метод Start()
+function ESPLibrary:Start()
+    if self.Connections.Render then
+        self.Connections.Render:Disconnect()
+        self.Connections.Render = nil
     end
-end)
-table.insert(ESPLibrary.Connections, renderConnection)
+
+    self.Connections.Render = RS.RenderStepped:Connect(function()
+        if not Camera then Camera = Workspace.CurrentCamera return end
+        local camPos = Camera.CFrame.Position
+
+        for instance, espObj in pairs(self.Objects) do
+            local settings = espObj.Settings
+
+            if not instance or not instance.Parent or not settings.Enabled then
+                dispatchHide(espObj)
+                continue
+            end
+
+            local cf, size = GetTargetCFAndSize(instance, settings)
+            if not cf then continue end
+
+            if settings.CFrameOffset then cf = cf * settings.CFrameOffset end
+            if settings.SizeOverride then size = settings.SizeOverride end
+
+            local distance = (cf.Position - camPos).Magnitude
+            if distance > settings.MaxDistance then
+                dispatchHide(espObj)
+                continue
+            end
+
+            local isStatic = (settings.DynamicSize == 0)
+            local success, x, y, w, h = ProjectVolume(Camera, cf, size, isStatic, settings.MinBoxSize)
+
+            if success then
+                local renderData = {
+                    OnScreen = true,
+                    Distance = distance,
+                    X = x,
+                    Y = y,
+                    W = w,
+                    H = h
+                }
+
+                for _, entry in ipairs(self.ModuleOrder) do
+                    local modName = entry.Name
+                    local module = entry.Module
+                    if settings[module.SettingsKey] and module.Update then
+                        local ok, err = pcall(module.Update, espObj, renderData)
+                        if not ok then warn(string.format("[ESP Module Error] %s: %s", modName, tostring(err))) end
+                    end
+                end
+            else
+                dispatchHide(espObj)
+            end
+        end
+    end)
+end
 
 function ESPLibrary:Destroy()
+    if self.Connections.Render then
+        self.Connections.Render:Disconnect()
+        self.Connections.Render = nil
+    end
     for _, conn in ipairs(self.Connections) do
         pcall(function() conn:Disconnect() end)
     end
+    self.Connections = {}
     for instance, _ in pairs(self.Objects) do
         self:Remove(instance)
     end
     self.Objects = {}
     self.Modules = {}
+    self.ModuleOrder = {}
 end
+
+-- Автозапуск рендера при импорте либы
+ESPLibrary:Start()
 
 return ESPLibrary
