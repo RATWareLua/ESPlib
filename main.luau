@@ -7,7 +7,7 @@ local ESPLibrary = {
     Modules = {},
     Connections = {},
     
-    RepoURL = "https://ссылка raw-гитхаб на модули.com",
+    RepoURL = "https://raw.githubusercontent.com/RATWareLua/ESPlib/refs/heads/main/modules/",
     
     DefaultSettings = {
         Enabled = true,
