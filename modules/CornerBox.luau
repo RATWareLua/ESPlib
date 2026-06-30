@@ -13,49 +13,65 @@ local math_clamp = math.clamp or function(v, lo, hi)
     return v < lo and lo or v > hi and hi or v
 end
 
+local DEFAULT_COLOR = Color3.fromRGB(0, 255, 120)
+
 function CornerBox.Init(espObj)
-    -- Именованные линии вместо индексов 1-8 (TL/TR/BL/BR + H/V) — читаемее в Update
-    espObj.Drawings.CornerBox = {
+    -- Именованные линии (TL/TR/BL/BR + H/V) — читаемее в позиционировании
+    local lines = {
         TL_H = DRAWING("Line"), TL_V = DRAWING("Line"),
         TR_H = DRAWING("Line"), TR_V = DRAWING("Line"),
         BL_H = DRAWING("Line"), BL_V = DRAWING("Line"),
         BR_H = DRAWING("Line"), BR_V = DRAWING("Line")
     }
-    
+    espObj.Drawings.CornerBox = lines
+
     local settings = espObj.Settings
-    local color = settings.BoxColor or Color3.fromRGB(0, 255, 120)
+    local color = settings.BoxColor or DEFAULT_COLOR
     local thickness = settings.BoxThickness or 2.5
     local transparency = settings.BoxTransparency or 1
 
-    for _, line in pairs(espObj.Drawings.CornerBox) do
+    -- Плоский массив тех же линий — для быстрых проходов в кадре (мимо pairs по хэшу)
+    local list = {
+        lines.TL_H, lines.TL_V, lines.TR_H, lines.TR_V,
+        lines.BL_H, lines.BL_V, lines.BR_H, lines.BR_V,
+    }
+
+    for i = 1, 8 do
+        local line = list[i]
         line.Visible      = false
         line.Color        = color
         line.Thickness    = thickness
         line.Transparency = transparency
     end
 
-    -- Приватный неймспейс модуля в CustomData (кэш для dirty-check свойств)
+    -- Приватный неймспейс модуля в CustomData (кэш для dirty-check)
     espObj.CustomData.CornerBox = {
+        List = list,
+        Shown = false,
         LastThickness = thickness,
         LastColor = color,
-        LastTransparency = transparency
-    } 
+        LastTransparency = transparency,
+    }
 end
 
 function CornerBox.Update(espObj, renderData)
     local lines = espObj.Drawings.CornerBox
     if not lines then return end
 
+    local cache = espObj.CustomData.CornerBox
+    local list = cache.List
+
     if not renderData.OnScreen then
-        for _, line in pairs(lines) do
-            line.Visible = false
+        -- Гасим только при переходе в оффскрин, а не каждый кадр
+        if cache.Shown then
+            for i = 1, 8 do list[i].Visible = false end
+            cache.Shown = false
         end
         return
     end
 
     local set = espObj.Settings
-    local cache = espObj.CustomData.CornerBox
-    
+
     local x, y = renderData.X, renderData.Y
     local w, h = renderData.W, renderData.H
 
@@ -79,11 +95,9 @@ function CornerBox.Update(espObj, renderData)
     local roundedH = math_floor(h)
     local roundedLen = math_floor(len)
 
-    -- Фикс: off округляется ОДИН раз и применяется симметрично на обе стороны.
-    -- floor(a - b) != a - floor(b), когда b дробное — именно это и давало
-    -- лишний пиксель смещения на стороне "-" (tLeft/tTop), из-за чего
-    -- линии угла вылезали друг за друга. round-to-nearest минимизирует
-    -- накопленную погрешность по сравнению с floor(halfT).
+    -- off округляется ОДИН раз и применяется симметрично на обе стороны.
+    -- floor(a - b) != a - floor(b) при дробном b — это давало лишний пиксель
+    -- смещения на стороне "-" (tLeft/tTop). round-to-nearest минимизирует погрешность.
     local off = math_floor(halfT + 0.5)
 
     local tLeft  = roundedX - off
@@ -104,8 +118,7 @@ function CornerBox.Update(espObj, renderData)
     lines.BR_H.From = V2(tRight, roundedY + roundedH);  lines.BR_H.To = V2(roundedX + roundedW - roundedLen, roundedY + roundedH)
     lines.BR_V.From = V2(roundedX + roundedW, tBot);    lines.BR_V.To = V2(roundedX + roundedW, roundedY + roundedH - roundedLen)
 
-    -- Свойства для Dirty check
-    local color = set.BoxColor or Color3.fromRGB(0, 255, 120)
+    local color = set.BoxColor or DEFAULT_COLOR
     local transp = set.BoxTransparency or 1
 
     -- Dirty-check: пишем свойства линий только когда они реально поменялись
@@ -114,7 +127,8 @@ function CornerBox.Update(espObj, renderData)
     local updateTransparency = (transp ~= cache.LastTransparency)
 
     if updateThickness or updateColor or updateTransparency then
-        for _, line in pairs(lines) do
+        for i = 1, 8 do
+            local line = list[i]
             if updateThickness then line.Thickness = dynT end
             if updateColor then line.Color = color end
             if updateTransparency then line.Transparency = transp end
@@ -124,14 +138,17 @@ function CornerBox.Update(espObj, renderData)
         cache.LastTransparency = transp
     end
 
-    for _, line in pairs(lines) do
-        line.Visible = true
+    -- Показываем только при переходе из оффскрина
+    if not cache.Shown then
+        for i = 1, 8 do list[i].Visible = true end
+        cache.Shown = true
     end
 end
 
 function CornerBox.Destroy(espObj)
-    if espObj.Drawings.CornerBox then
-        for _, line in pairs(espObj.Drawings.CornerBox) do
+    local lines = espObj.Drawings.CornerBox
+    if lines then
+        for _, line in pairs(lines) do
             line:Remove()
         end
         espObj.Drawings.CornerBox = nil

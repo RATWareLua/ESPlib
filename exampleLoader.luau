@@ -25,6 +25,15 @@ local BASE_ESP_SETTINGS = {
     MaxDistance     = 10000,
 }
 
+-- Поведение тимчека и цвета (A: различение команд, B: подсветка цветом команды)
+local CONFIG = {
+    UseTeamColor = true,                        -- B: красить бокс в реальный цвет команды
+    TeamCheck    = true,                        -- A: различать своих и чужих
+    HideAllies   = false,                       -- true -> не рисовать союзников вообще
+    AllyColor    = Color3.fromRGB(0, 170, 255), -- цвет своих  (когда UseTeamColor = false)
+    EnemyColor   = Color3.fromRGB(255, 60, 60), -- цвет врагов (когда UseTeamColor = false)
+}
+
 -- Глубокая копия настроек — у каждого игрока свой независимый набор
 local function copyTable(t)
     local copy = {}
@@ -40,10 +49,44 @@ local LocalPlayer = Players.LocalPlayer
 local PlayerTracking = {}
 local globalConnections = {}
 
+-- ── Тимчек и цвет команды ───────────────────────────────────────────────
+-- Свой, если у нас и у цели одна и та же Team. Если у кого-то Team нет
+-- (free-for-all / игра без Team-объектов) — считаем врагом.
+local function isAlly(plr)
+    return plr.Team ~= nil and plr.Team == LocalPlayer.Team
+end
+
+-- Цвет бокса для игрока:
+--   UseTeamColor -> реальный цвет его команды (plr.TeamColor)
+--   иначе TeamCheck -> свой/враг по фикс. цветам из CONFIG
+--   иначе -> базовый BoxColor
+local function resolveBoxColor(plr)
+    if CONFIG.UseTeamColor and plr.Team then
+        return plr.TeamColor.Color
+    end
+    if CONFIG.TeamCheck then
+        return isAlly(plr) and CONFIG.AllyColor or CONFIG.EnemyColor
+    end
+    return BASE_ESP_SETTINGS.BoxColor
+end
+
+-- Применяет цвет и видимость к активному ESP игрока. Зовётся при спавне и при
+-- смене команды: новый цвет линий подхватит CornerBox своим dirty-check, а
+-- Enabled управляет показом союзников.
+local function applyTeamState(track, plr)
+    if not track.ActiveESP then return end
+    local hideAlly = CONFIG.TeamCheck and CONFIG.HideAllies and isAlly(plr)
+    track.ActiveESP:UpdateSettings({
+        Enabled  = not hideAlly,
+        BoxColor = resolveBoxColor(plr),
+    })
+end
+
 local function RemovePlayer(plr)
     local track = PlayerTracking[plr]
     if track then
         if track.CharConn then pcall(function() track.CharConn:Disconnect() end) end
+        if track.TeamConn then pcall(function() track.TeamConn:Disconnect() end) end
         if track.ActiveESP then pcall(function() track.ActiveESP:Remove() end) end
         PlayerTracking[plr] = nil
     end
@@ -55,6 +98,7 @@ local function AddPlayer(plr)
 
     local track = {
         CharConn = nil,
+        TeamConn = nil,
         ActiveESP = nil
     }
     PlayerTracking[plr] = track
@@ -67,19 +111,19 @@ local function AddPlayer(plr)
 
         -- Индивидуальная копия настроек для каждого игрока
         local playerSettings = copyTable(BASE_ESP_SETTINGS)
-
-        -- Пример гибкой кастомизации под союзников/врагов:
-        if plr.TeamColor == LocalPlayer.TeamColor then
-            playerSettings.BoxColor = Color3.fromRGB(0, 150, 255)  -- Союзники синие
-        else
-            playerSettings.BoxColor = Color3.fromRGB(255, 50, 50)   -- Враги красные
-        end
-
         track.ActiveESP = ESP:Add(char, playerSettings)
+
+        -- A + B: тимчек + цвет команды (далее обновляется по сигналу смены Team)
+        applyTeamState(track, plr)
     end
 
     track.CharConn = plr.CharacterAdded:Connect(function(char)
         task.spawn(handleCharacter, char)
+    end)
+
+    -- Перекрашиваем / перепроверяем команду на лету при её смене
+    track.TeamConn = plr:GetPropertyChangedSignal("Team"):Connect(function()
+        applyTeamState(track, plr)
     end)
 
     if plr.Character then
