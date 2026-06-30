@@ -1,7 +1,7 @@
 --!nocheck
 -- Module: Tracer.luau
--- Линия от выбранной screen-origin точки напрямую к спроецированной точке цели.
--- Endpoint НЕ прижимается к краю экрана: Drawing нормально принимает off-screen координаты.
+-- Линия от выбранной screen-origin точки к 2D-направлению цели.
+-- TracerOrigin влияет только на From, направление всегда: front=up, back=down, left/right.
 
 local Tracer = {
     Priority = 20,
@@ -11,6 +11,7 @@ local Tracer = {
 local DRAWING = Drawing.new
 local V2 = Vector2.new
 local V3 = Vector3.new
+local CF = CFrame.new
 
 local cloneref = cloneref or function(o) return o end
 local Workspace = cloneref(game:GetService("Workspace"))
@@ -43,18 +44,22 @@ local function hideLine(line, cache)
     end
 end
 
-local function projectedPoint(worldPos)
-    local projected = Camera:WorldToViewportPoint(worldPos)
-    local x, y = projected.X, projected.Y
+local function targetPoint(worldPos)
+    local vp = Camera.ViewportSize
+    local center = vp * 0.5
+    local camCF = Camera.CFrame
+    local camPos = camCF.Position
+    local look = camCF.LookVector
+    local flatLook = V3(look.X, 0, look.Z)
+    if flatLook.Magnitude <= 0.01 then return center.X, center.Y end
 
-    -- Behind-camera projection is mirrored around screen center; mirror it back.
-    if projected.Z < 0 then
-        local vp = Camera.ViewportSize
-        x = vp.X - x
-        y = vp.Y - y
-    end
+    local yawFrame = CF(camPos, camPos + flatLook)
+    local rel = yawFrame:PointToObjectSpace(worldPos)
+    local dir = V2(rel.X, rel.Z)
+    if dir.Magnitude <= 0.01 then return center.X, center.Y end
 
-    return x, y
+    local scale = Camera.ViewportSize.Y * (tonumber(Workspace.CurrentCamera.FieldOfView) or 70) / 70
+    return center.X + dir.Unit.X * scale, center.Y + dir.Unit.Y * scale
 end
 
 function Tracer.Init(espObj)
@@ -93,9 +98,7 @@ function Tracer.Update(espObj, renderData)
     local vp = Camera.ViewportSize
     local ox, oy = originPoint(vp, set.TracerOrigin)
 
-    local footOffset = set.TracerFootOffset
-    if footOffset == nil then footOffset = 3 end
-    local tx, ty = projectedPoint(cf.Position - V3(0, footOffset, 0))
+    local tx, ty = targetPoint(cf.Position)
 
     line.From = V2(ox, oy)
     line.To = V2(tx, ty)
