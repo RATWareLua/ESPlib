@@ -50,7 +50,7 @@ function ESPLibrary:Import(moduleName, customUrlOrModule)
         local ok, result = pcall(function()
             return loadstring(game:HttpGet(url))()
         end)
-        
+
         if ok and type(result) == "table" then
             moduleTable = result
         else
@@ -65,7 +65,7 @@ function ESPLibrary:Import(moduleName, customUrlOrModule)
 
     self.Modules[moduleName] = moduleTable
     table.insert(self.ModuleOrder, { Name = moduleName, Module = moduleTable })
-    
+
     -- Сортировка модулей по приоритету отрисовки (Z-Index)
     table.sort(self.ModuleOrder, function(a, b)
         return a.Module.Priority < b.Module.Priority
@@ -170,10 +170,10 @@ local function ProjectVolume(camera, cf, size, isStatic, minSize)
             anyVisible = true
             local rawH = math_abs(tp.Y - bp.Y)
             local rawW = rawH / 1.6
-            
+
             h = math_max(rawH, minSize)
             w = math_max(rawW, minSize)
-            
+
             local cx = (tp.X + bp.X) * 0.5
             local cy = (tp.Y + bp.Y) * 0.5
             x = cx - w * 0.5
@@ -208,7 +208,7 @@ local function ProjectVolume(camera, cf, size, isStatic, minSize)
             local rawH = maxY - minY
             local cx = minX + rawW * 0.5
             local cy = minY + rawH * 0.5
-            
+
             w = math_max(rawW, minSize)
             h = math_max(rawH, minSize)
             x = cx - w * 0.5
@@ -246,11 +246,11 @@ function ESPLibrary:Add(instance, customSettings)
             end
         end
     end
-    
+
     function espObject:UpdateSettings(newSettings)
         for k, v in pairs(newSettings) do self.Settings[k] = v end
     end
-    
+
     function espObject:Remove()
         for _, entry in ipairs(ESPLibrary.ModuleOrder) do
             local module = entry.Module

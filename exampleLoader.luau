@@ -1,33 +1,31 @@
 --!nocheck
--- Loader Script with Fixed Per-Player Copying and Logging
+-- Loader: трекинг игроков, индивидуальные настройки ESP, очистка
 
 local storage = (getgenv and getgenv()) or shared
 if storage.CornerESP_Cleanup then
     pcall(storage.CornerESP_Cleanup)
 end
 
--- 1. Загрузка математически чистого ядра
+-- 1. Загрузка ядра
 local ESP = loadstring(game:HttpGet("https://raw.githubusercontent.com/RATWareLua/ESPlib/refs/heads/main/main.luau"))()
 
 -- 2. Загрузка модуля
 ESP:Import("CornerBox")
 
--- Базовый неизменяемый шаблон настроек
+-- Базовый шаблон настроек (копируется на каждого игрока)
 local BASE_ESP_SETTINGS = {
-    CornerBox       = true,
-    DynamicSize     = 0,                             
-    UsePrimaryPart  = true,                          
-    SizeOverride    = Vector3.new(4, 6.9, 4),        
-    CFrameOffset    = CFrame.new(0, -0.5, 0),       
-    BoxColor        = Color3.fromRGB(0, 255, 120),   
-    BoxThickness    = 2.5,                           
-    BoxTransparency = 1,                             
-    CornerScale     = 0.25,                          
-    MinBoxSize      = 4,                             
-    MaxDistance     = 10000,                         
+    CornerBox       = true,                    -- включить модуль CornerBox
+    DynamicSize     = 0,                       -- 0 = статичный бокс фикс. размера
+    SizeOverride    = Vector3.new(4, 6.9, 4),  -- габариты бокса; убрать -> бокс по телу
+    BoxColor        = Color3.fromRGB(0, 255, 120),
+    BoxThickness    = 2.5,
+    BoxTransparency = 1,
+    CornerScale     = 0.25,                    -- длина уголка как доля ширины
+    MinBoxSize      = 4,
+    MaxDistance     = 10000,
 }
 
--- Глубокая копия настроек — чтобы у каждого игрока был свой независимый стол
+-- Глубокая копия настроек — у каждого игрока свой независимый набор
 local function copyTable(t)
     local copy = {}
     for k, v in pairs(t) do
@@ -39,7 +37,7 @@ end
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 
-local PlayerTracking = {} 
+local PlayerTracking = {}
 local globalConnections = {}
 
 local function RemovePlayer(plr)
@@ -69,7 +67,7 @@ local function AddPlayer(plr)
 
         -- Индивидуальная копия настроек для каждого игрока
         local playerSettings = copyTable(BASE_ESP_SETTINGS)
-        
+
         -- Пример гибкой кастомизации под союзников/врагов:
         if plr.TeamColor == LocalPlayer.TeamColor then
             playerSettings.BoxColor = Color3.fromRGB(0, 150, 255)  -- Союзники синие
