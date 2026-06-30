@@ -29,7 +29,8 @@ local ipairs = ipairs
 local pairs = pairs
 
 local ESPLibrary = {
-    Objects = {},       -- [instance] -> espObject
+    Objects = {},       -- [instance] -> espObject (хэш для O(1) lookup)
+    ActiveList = {},    -- упакованный массив тех же espObject — перебор в кадре по нему
     Modules = {},       -- [name] -> module (прямой доступ)
     ModuleOrder = {},   -- {Name, Module}, отсортирован по Priority для детерминированного z-order
     Connections = {},
@@ -119,6 +120,25 @@ local function GetTargetCFAndSize(espObj, settings)
     return nil, nil
 end
 
+-- Дешёвый опорный CFrame цели БЕЗ прохода bodyBounds. Используется двояко:
+--   * .Position — для пре-куллинга по дистанции;
+--   * сам CFrame — как «ключ движения»: если он не изменился с прошлого кадра,
+--     цель не сдвинулась и не повернулась → полный трансформ можно не пересчитывать.
+-- Возвращает CFrame или nil (тогда кэш движения недоступен — считаем каждый кадр).
+local function cheapRefCF(espObj)
+    local inst = espObj.Instance
+    if espObj.IsModel then
+        local primary = inst.PrimaryPart or inst:FindFirstChild("HumanoidRootPart")
+        if primary then return primary.CFrame end
+        local bp = espObj.BodyParts
+        if bp and bp[1] then return bp[1].CFrame end
+        return nil
+    elseif espObj.IsPart then
+        return inst.CFrame
+    end
+    return nil
+end
+
 -- wtvp — кэшированная camera.WorldToViewportPoint (вызов мимо namecall).
 local function ProjectVolume(wtvp, camera, camCF, cf, size, isStatic, minSize)
     local x, y, w, h
@@ -201,6 +221,7 @@ local function bindBodyParts(espObj)
         if c:IsA("BasePart") then
             local bp = espObj.BodyParts
             bp[#bp + 1] = c
+            espObj.BoundsDirty = true   -- набор партов изменился → пере-измерить центр
         end
     end)
     conns[#conns + 1] = inst.ChildRemoved:Connect(function(c)
@@ -209,6 +230,7 @@ local function bindBodyParts(espObj)
             if bp[i] == c then
                 bp[i] = bp[#bp]       -- swap-remove, порядок неважен
                 bp[#bp] = nil
+                espObj.BoundsDirty = true
                 break
             end
         end
@@ -265,6 +287,69 @@ local function CallUpdates(espObj, rd, safe)
 end
 
 -- ════════════════════════════════════════════════════════════════════════
+--  Методы espObject (общий metatable вместо per-object замыканий)
+-- ════════════════════════════════════════════════════════════════════════
+-- Раньше UpdateSettings/Remove создавались новыми замыканиями на каждый :Add —
+-- лишние аллокации при частых Add/Remove (текучка целей из imgui-меню). Теперь
+-- это методы на одном metatable, объект получает его через setmetatable.
+
+local ESP_OBJ = {}
+ESP_OBJ.__index = ESP_OBJ
+
+function ESP_OBJ:UpdateSettings(newSettings)
+    local s = self.Settings
+    for k, v in pairs(newSettings) do s[k] = v end
+
+    -- Пере-компиляция активных модулей; выключенные гасим один раз.
+    local prev = self.UpdateList
+    local ord = ESPLibrary.ModuleOrder
+    EnsureInit(self, ord)
+    CompileModules(self, ord)
+
+    local active = {}
+    local cur = self.UpdateList
+    for i = 1, #cur do active[cur[i]] = true end
+    for i = 1, #prev do
+        local m = prev[i]
+        if not active[m] then m.Update(self, HIDDEN) end
+    end
+
+    -- Настройки (SizeOverride/Offset/режим) могли поменяться из меню — финальный
+    -- трансформ мог устареть даже без движения цели. Сбрасываем кэш движения.
+    self.CachedCF = nil
+    self.CachedSize = nil
+    self.LastRefCF = nil
+end
+
+function ESP_OBJ:Remove()
+    local ord = ESPLibrary.ModuleOrder
+    for i = 1, #ord do
+        local module = ord[i].Module
+        if module.Destroy then
+            pcall(module.Destroy, self)
+        end
+    end
+    local conns = self.Conns
+    for i = 1, #conns do
+        conns[i]:Disconnect()
+    end
+
+    -- Swap-remove из упакованного списка активных объектов.
+    local list = ESPLibrary.ActiveList
+    local idx = self._index
+    if idx then
+        local n = #list
+        local last = list[n]
+        list[idx] = last
+        if last then last._index = idx end
+        list[n] = nil
+        self._index = nil
+    end
+
+    ESPLibrary.Objects[self.Instance] = nil
+end
+
+-- ════════════════════════════════════════════════════════════════════════
 --  Публичный API
 -- ════════════════════════════════════════════════════════════════════════
 
@@ -318,7 +403,7 @@ function ESPLibrary:Add(instance, customSettings)
 
     local settings = MergeSettings(self.DefaultSettings, customSettings)
 
-    local espObject = {
+    local espObject = setmetatable({
         Instance = instance,
         Settings = settings,
         Drawings = {},
@@ -326,57 +411,39 @@ function ESPLibrary:Add(instance, customSettings)
         BodyParts = nil,         -- кэш партов тела (для Model)
         Conns = {},              -- подписки объекта (ChildAdded/Removed)
         UpdateList = {},          -- скомпилированные активные Update-модули
+        CenterOffset = nil,       -- кэш измеренного офсета HRP→центр тела (P1)
+        BoundsDirty = true,       -- набор партов изменился → пересчитать CenterOffset
+        CachedCF = nil,           -- кэш финального трансформа, пока цель не двигается
+        CachedSize = nil,
+        LastRefCF = nil,          -- опорный CFrame прошлого кадра (детектор движения)
+        _index = nil,             -- позиция в ActiveList (для swap-remove в :Remove)
         RenderData = {            -- переиспользуемый стол кадра (без аллокаций)
             OnScreen = true, Distance = 0, X = 0, Y = 0, W = 0, H = 0,
             WorldCF = nil, WorldSize = nil,  -- мировой трансформ для 3D-модулей
         },
         IsModel = instance:IsA("Model"),
         IsPart = instance:IsA("BasePart"),
-    }
+    }, ESP_OBJ)
 
     if espObject.IsModel then
         bindBodyParts(espObject)
     end
 
+    -- Самоочистка: при уничтожении инстанса (респаун/выход/Destroy) снимаем ESP сами.
+    -- Иначе Drawing-объекты и записи в Objects/ActiveList утекут — render-loop их лишь
+    -- прячет по Parent==nil, но не освобождает. Идемпотентно с ручным :Remove().
+    espObject.Conns[#espObject.Conns + 1] = instance.Destroying:Connect(function()
+        espObject:Remove()
+    end)
+
     local order = self.ModuleOrder
     EnsureInit(espObject, order)
     CompileModules(espObject, order)
 
-    function espObject:UpdateSettings(newSettings)
-        local s = self.Settings
-        for k, v in pairs(newSettings) do s[k] = v end
-
-        -- Пере-компиляция активных модулей; выключенные гасим один раз.
-        local prev = self.UpdateList
-        local ord = ESPLibrary.ModuleOrder
-        EnsureInit(self, ord)
-        CompileModules(self, ord)
-
-        local active = {}
-        local cur = self.UpdateList
-        for i = 1, #cur do active[cur[i]] = true end
-        for i = 1, #prev do
-            local m = prev[i]
-            if not active[m] then m.Update(self, HIDDEN) end
-        end
-    end
-
-    function espObject:Remove()
-        local ord = ESPLibrary.ModuleOrder
-        for i = 1, #ord do
-            local module = ord[i].Module
-            if module.Destroy then
-                pcall(module.Destroy, self)
-            end
-        end
-        local conns = self.Conns
-        for i = 1, #conns do
-            conns[i]:Disconnect()
-        end
-        ESPLibrary.Objects[self.Instance] = nil
-    end
-
     self.Objects[instance] = espObject
+    local list = self.ActiveList
+    list[#list + 1] = espObject
+    espObject._index = #list
     return espObject
 end
 
@@ -405,64 +472,98 @@ function ESPLibrary:Start()
         local wtvp = camera.WorldToViewportPoint
         local safe = self.SafeUpdate
 
-        for _, espObj in pairs(self.Objects) do
+        -- Перебор по упакованному массиву (не по хэшу Objects).
+        local activeList = self.ActiveList
+        for li = 1, #activeList do
+            local espObj = activeList[li]
             local instance = espObj.Instance
             local settings = espObj.Settings
 
             if not instance.Parent or not settings.Enabled then
                 HideObject(espObj)
-            else
-                local cf, size = GetTargetCFAndSize(espObj, settings)
-                if cf then
-                    local sizeOverride = settings.SizeOverride
-                    if sizeOverride then
-                        size = sizeOverride
-                        -- При UsePrimaryPart cf = HRP (выше центра тела) — пере-центруем.
-                        if settings.UsePrimaryPart and espObj.IsModel then
-                            local center = bodyBounds(espObj.BodyParts)
-                            if center then
-                                cf = (cf - cf.Position) + center
-                            end
-                        end
-                    end
+                continue
+            end
 
-                    local cframeOffset = settings.CFrameOffset
-                    if cframeOffset then cf = cf * cframeOffset end
+            local maxD = settings.MaxDistance
 
-                    -- Отсечение по КВАДРАТУ дистанции (sqrt только если цель видима).
-                    local pos = cf.Position
-                    local ox, oy, oz = pos.X - camX, pos.Y - camY, pos.Z - camZ
-                    local distSq = ox * ox + oy * oy + oz * oz
-                    local maxD = settings.MaxDistance
-
-                    if distSq > maxD * maxD then
-                        HideObject(espObj)
-                    else
-                        local rd = espObj.RenderData
-                        rd.Distance = math_sqrt(distSq)
-                        -- Уже разрешённый мировой трансформ цели — для модулей,
-                        -- которым нужна 3D-геометрия (3D-бокс, скелет) или off-screen
-                        -- индикаторы (трассер/стрелки). Отдаётся даже когда бокс вне
-                        -- экрана/за камерой — чтобы такие модули не пропадали.
-                        rd.WorldCF = cf
-                        rd.WorldSize = size
-
-                        local isStatic = (settings.DynamicSize == 0)
-                        local ok, x, y, w, h = ProjectVolume(wtvp, camera, camCF, cf, size, isStatic, settings.MinBoxSize)
-
-                        if ok then
-                            rd.OnScreen = true
-                            rd.X, rd.Y, rd.W, rd.H = x, y, w, h
-                        else
-                            -- Цель вне экрана/за спиной, но жива и в радиусе. Бокс-модули
-                            -- прячутся по OnScreen, off-screen модули рисуют по WorldCF.
-                            rd.OnScreen = false
-                        end
-
-                        CallUpdates(espObj, rd, safe)
-                    end
+            -- Дешёвый опорный CFrame: и для пре-куллинга по дистанции, и как детектор
+            -- движения (сравнение с прошлым кадром).
+            local refCF = cheapRefCF(espObj)
+            if refCF then
+                local rp = refCF.Position
+                local dx, dy, dz = rp.X - camX, rp.Y - camY, rp.Z - camZ
+                if dx * dx + dy * dy + dz * dz > maxD * maxD then
+                    HideObject(espObj)
+                    continue
                 end
             end
+
+            local cf, size
+            if refCF and not espObj.BoundsDirty and espObj.CachedCF
+               and refCF == espObj.LastRefCF then
+                -- Цель не сдвинулась/не повернулась и набор партов тот же → берём
+                -- готовый трансформ, минуя GetTargetCFAndSize/bodyBounds/рецентровку.
+                cf, size = espObj.CachedCF, espObj.CachedSize
+            else
+                cf, size = GetTargetCFAndSize(espObj, settings)
+                if not cf then continue end
+
+                local sizeOverride = settings.SizeOverride
+                if sizeOverride then
+                    size = sizeOverride
+                    -- P1: cf = HRP (выше центра тела). Сдвигаем на кэшированный
+                    -- измеренный офсет HRP→центр; bodyBounds — только при смене партов.
+                    if settings.UsePrimaryPart and espObj.IsModel then
+                        if espObj.BoundsDirty then
+                            local center = bodyBounds(espObj.BodyParts)
+                            if center then
+                                espObj.CenterOffset = cf:PointToObjectSpace(center)
+                            end
+                            espObj.BoundsDirty = false
+                        end
+                        local off = espObj.CenterOffset
+                        if off then cf = cf * CFrame_new(off) end
+                    end
+                end
+
+                local cframeOffset = settings.CFrameOffset
+                if cframeOffset then cf = cf * cframeOffset end
+
+                -- Кэшируем финальный трансформ и опорный CFrame этого кадра.
+                espObj.CachedCF, espObj.CachedSize = cf, size
+                espObj.LastRefCF = refCF
+            end
+
+            -- Точное отсечение по КВАДРАТУ дистанции (sqrt только для прошедших).
+            local pos = cf.Position
+            local ox, oy, oz = pos.X - camX, pos.Y - camY, pos.Z - camZ
+            local distSq = ox * ox + oy * oy + oz * oz
+            if distSq > maxD * maxD then
+                HideObject(espObj)
+                continue
+            end
+
+            local rd = espObj.RenderData
+            rd.Distance = math_sqrt(distSq)
+            -- Уже разрешённый мировой трансформ цели — для модулей, которым нужна
+            -- 3D-геометрия (3D-бокс, скелет) или off-screen индикаторы (трассер).
+            -- Отдаётся даже когда бокс вне экрана/за камерой — чтобы они не пропадали.
+            rd.WorldCF = cf
+            rd.WorldSize = size
+
+            local isStatic = (settings.DynamicSize == 0)
+            local ok, x, y, w, h = ProjectVolume(wtvp, camera, camCF, cf, size, isStatic, settings.MinBoxSize)
+
+            if ok then
+                rd.OnScreen = true
+                rd.X, rd.Y, rd.W, rd.H = x, y, w, h
+            else
+                -- Цель вне экрана/за спиной, но жива и в радиусе. Бокс-модули
+                -- прячутся по OnScreen, off-screen модули рисуют по WorldCF.
+                rd.OnScreen = false
+            end
+
+            CallUpdates(espObj, rd, safe)
         end
     end)
 end
@@ -477,6 +578,7 @@ function ESPLibrary:Destroy()
         self:Remove(instance)
     end
     self.Objects = {}
+    self.ActiveList = {}
     self.Modules = {}
     self.ModuleOrder = {}
 end
