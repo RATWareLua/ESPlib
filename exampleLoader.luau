@@ -2,8 +2,14 @@
 -- Loader: трекинг игроков, индивидуальные настройки ESP, очистка
 
 local storage = (getgenv and getgenv()) or shared
-if storage.ESP_Cleanup then
-    pcall(storage.ESP_Cleanup)
+-- Снимаем любой ранее запущенный инстанс. Чистим и легаси-ключ: при переименовании
+-- ключа старый инстанс иначе остаётся жить со своими Drawing'ами и render-циклом
+-- (это и давало «двойные» трассеры до перезахода в плейс).
+for _, key in ipairs({ "ESP_Cleanup", "CornerESP_Cleanup" }) do
+    if storage[key] then
+        pcall(storage[key])
+        storage[key] = nil
+    end
 end
 
 -- 1. Загрузка ядра
