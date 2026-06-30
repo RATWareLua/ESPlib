@@ -2,28 +2,27 @@
 -- Universal ESP Framework - Core (main.luau)
 
 local ESPLibrary = {
-    Objects = {},       
-    Modules = {},       -- Хранилище модулей для прямого доступа [имя] -> модуль
-    ModuleOrder = {},   -- Массив {Name, Module} отсортированный по приоритету для детерминированного рендера
-    Connections = {},   
-    
+    Objects = {},       -- [instance] -> espObject
+    Modules = {},       -- [name] -> module (прямой доступ)
+    ModuleOrder = {},   -- {Name, Module}, отсортирован по Priority для детерминированного z-order
+    Connections = {},
+
     RepoURL = "https://raw.githubusercontent.com/RATWareLua/ESPlib/refs/heads/main/modules/",
-    
+
     DefaultSettings = {
         Enabled = true,
         MaxDistance = 10000,
         MinBoxSize = 4,
-        DynamicSize = 0,     
+        DynamicSize = 0,
         UsePrimaryPart = false,
-        SizeOverride = nil,    
-        CFrameOffset = nil,    
+        SizeOverride = nil,
+        CFrameOffset = nil,
     }
 }
 
 -- Сервисы
 local Workspace = game:GetService("Workspace")
 local RS = game:GetService("RunService")
-local Camera = Workspace.CurrentCamera
 
 local math_max = math.max
 local math_huge = math.huge
@@ -72,7 +71,7 @@ function ESPLibrary:Import(moduleName, customUrlOrModule)
         return a.Module.Priority < b.Module.Priority
     end)
 
-    -- Решение Проблемы 1: Поздний импорт модулей (Инициализируем модуль на уже созданных объектах)
+    -- Поздний импорт: инициализируем модуль на уже добавленных объектах
     for _, espObj in pairs(self.Objects) do
         if espObj.Settings[moduleTable.SettingsKey] and not espObj.Drawings[moduleName] then
             if moduleTable.Init then
@@ -94,30 +93,37 @@ local function MergeSettings(default, custom)
     return result
 end
 
--- Центр «скелета» персонажа: AABB ТОЛЬКО по родным партам тела.
--- Прямые BasePart-дети модели — это части тела (Head/Torso/конечности/HRP).
--- Аксессуары (шляпы, причёски, бэкпаки, тулзы) лежат глубже — их Handle сидит
--- внутри Accessory/Tool и прямым ребёнком модели НЕ является, поэтому сюда не
--- попадает. Иначе высокий хэт растягивал бы бокс и тянул центр вверх, причём
--- по-разному у каждого игрока (у всех свой набор аксов) — это и был источник
--- «уезжающего вверх» бокса на рандомных таргетах.
-local function GetBodyCenter(model)
-    local min, max
+-- World-AABB «скелета» персонажа: центр и размер ТОЛЬКО по родным партам тела.
+-- Части тела (Head/Torso/конечности/HRP) — это прямые BasePart-дети модели.
+-- Handle аксессуаров (шляпы, причёски, бэкпаки, тулзы) сидит глубже, внутри
+-- Accessory/Tool, прямым ребёнком не является и сюда не попадает. Иначе высокий
+-- акс растягивал бы бокс и тянул центр вверх — причём по-разному у каждого игрока
+-- (у всех свой набор аксов), что и давало «уезжающий вверх» бокс на рандомных целях.
+-- Возвращает (center: Vector3, size: Vector3) или nil, если партов тела нет.
+local function GetBodyBounds(model)
+    local minX, minY, minZ = math_huge, math_huge, math_huge
+    local maxX, maxY, maxZ = -math_huge, -math_huge, -math_huge
+    local found = false
+
     for _, p in ipairs(model:GetChildren()) do
         if p:IsA("BasePart") then
-            local pos = p.Position
-            if min then
-                min = min:Min(pos)
-                max = max:Max(pos)
-            else
-                min, max = pos, pos
-            end
+            found = true
+            local pos, sz = p.Position, p.Size
+            local hx, hy, hz = sz.X * 0.5, sz.Y * 0.5, sz.Z * 0.5
+            if pos.X - hx < minX then minX = pos.X - hx end
+            if pos.X + hx > maxX then maxX = pos.X + hx end
+            if pos.Y - hy < minY then minY = pos.Y - hy end
+            if pos.Y + hy > maxY then maxY = pos.Y + hy end
+            if pos.Z - hz < minZ then minZ = pos.Z - hz end
+            if pos.Z + hz > maxZ then maxZ = pos.Z + hz end
         end
     end
-    if min then
-        return (min + max) * 0.5
-    end
-    return nil
+
+    if not found then return nil end
+
+    local center = V3((minX + maxX) * 0.5, (minY + maxY) * 0.5, (minZ + maxZ) * 0.5)
+    local size = V3(maxX - minX, maxY - minY, maxZ - minZ)
+    return center, size
 end
 
 local function GetTargetCFAndSize(instance, settings)
@@ -136,8 +142,13 @@ local function GetTargetCFAndSize(instance, settings)
     end
 
     if instance:IsA("Model") then
-        local cf, size = instance:GetBoundingBox()
-        return cf, size
+        -- Скелет, а не bounding box: размер бокса не должен зависеть от аксессуаров.
+        local center, size = GetBodyBounds(instance)
+        if center then
+            return CFrame.new(center), size
+        end
+        -- Фолбэк для моделей без партов тела (не-персонажей).
+        return instance:GetBoundingBox()
     elseif instance:IsA("BasePart") then
         return instance.CFrame, instance.Size
     end
@@ -213,18 +224,18 @@ end
 
 function ESPLibrary:Add(instance, customSettings)
     if not instance then return end
-    if self.Objects[instance] then return self.Objects[instance] end 
-    
+    if self.Objects[instance] then return self.Objects[instance] end
+
     local settings = MergeSettings(self.DefaultSettings, customSettings)
-    
+
     local espObject = {
         Instance = instance,
         Settings = settings,
-        Drawings = {},         
+        Drawings = {},
         CustomData = {}
     }
-    
-    -- Решение Проблемы 4: pcall с выводом ошибок в лог при инициализации
+
+    -- Инициализация модулей под pcall: падение одного не роняет остальные
     for _, entry in ipairs(self.ModuleOrder) do
         local modName = entry.Name
         local module = entry.Module
@@ -260,7 +271,7 @@ function ESPLibrary:Remove(instance)
     end
 end
 
--- Решение Проблемы 5: Контроль жизненного цикла через метод Start()
+-- Управление жизненным циклом рендер-цикла
 function ESPLibrary:Start()
     if self.Connections.Render then
         self.Connections.Render:Disconnect()
@@ -268,8 +279,10 @@ function ESPLibrary:Start()
     end
 
     self.Connections.Render = RS.RenderStepped:Connect(function()
-        if not Camera then Camera = Workspace.CurrentCamera return end
-        local camPos = Camera.CFrame.Position
+        -- Камеру читаем каждый кадр: CurrentCamera может смениться (респавн/смена вида)
+        local camera = Workspace.CurrentCamera
+        if not camera then return end
+        local camPos = camera.CFrame.Position
 
         for instance, espObj in pairs(self.Objects) do
             local settings = espObj.Settings
@@ -284,12 +297,11 @@ function ESPLibrary:Start()
 
             if settings.SizeOverride then
                 size = settings.SizeOverride
-                -- Фикс «бокс уезжает вверх»: фиксированный SizeOverride требует якоря в
-                -- центре ТЕЛА. GetBoundingBox считает AABB по всем партам, включая Handle
-                -- аксессуаров (шляпы/причёски/бэкпаки) — высокий акс тянет центр вверх, и
-                -- по-разному у каждого игрока. Берём центр только по родным партам тела.
-                if instance:IsA("Model") then
-                    local bodyCenter = GetBodyCenter(instance)
+                -- При UsePrimaryPart cf указывает на HumanoidRootPart, который сидит выше
+                -- центра тела — фиксированный по размеру бокс надо пере-центровать на центр
+                -- скелета, иначе он «уезжает вверх». Без UsePrimaryPart cf уже = центр тела.
+                if settings.UsePrimaryPart and instance:IsA("Model") then
+                    local bodyCenter = GetBodyBounds(instance)
                     if bodyCenter then
                         cf = (cf - cf.Position) + bodyCenter
                     end
@@ -305,7 +317,7 @@ function ESPLibrary:Start()
             end
 
             local isStatic = (settings.DynamicSize == 0)
-            local success, x, y, w, h = ProjectVolume(Camera, cf, size, isStatic, settings.MinBoxSize)
+            local success, x, y, w, h = ProjectVolume(camera, cf, size, isStatic, settings.MinBoxSize)
 
             if success then
                 local renderData = {
@@ -333,11 +345,8 @@ function ESPLibrary:Start()
 end
 
 function ESPLibrary:Destroy()
-    if self.Connections.Render then
-        self.Connections.Render:Disconnect()
-        self.Connections.Render = nil
-    end
-    for _, conn in ipairs(self.Connections) do
+    -- pairs, а не ipairs: коннекты лежат по строковым ключам (Render и т.п.)
+    for _, conn in pairs(self.Connections) do
         pcall(function() conn:Disconnect() end)
     end
     self.Connections = {}

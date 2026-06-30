@@ -27,7 +27,7 @@ local BASE_ESP_SETTINGS = {
     MaxDistance     = 10000,                         
 }
 
--- Глубокое копирование таблиц для решения Проблемы 10
+-- Глубокая копия настроек — чтобы у каждого игрока был свой независимый стол
 local function copyTable(t)
     local copy = {}
     for k, v in pairs(t) do
@@ -67,7 +67,7 @@ local function AddPlayer(plr)
             track.ActiveESP = nil
         end
 
-        -- Решение Проблемы 10: Индивидуальная копия настроек для каждого игрока
+        -- Индивидуальная копия настроек для каждого игрока
         local playerSettings = copyTable(BASE_ESP_SETTINGS)
         
         -- Пример гибкой кастомизации под союзников/врагов:
@@ -89,7 +89,7 @@ local function AddPlayer(plr)
     end
 end
 
--- Решение Проблемы 11: Логирование с варнингом вместо слепого pcall
+-- Инициализация уже подключённых игроков (с логом ошибок вместо слепого pcall)
 for _, plr in ipairs(Players:GetPlayers()) do
     local ok, err = pcall(AddPlayer, plr)
     if not ok then

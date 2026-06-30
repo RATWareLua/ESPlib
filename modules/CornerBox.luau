@@ -14,7 +14,7 @@ local math_clamp = math.clamp or function(v, lo, hi)
 end
 
 function CornerBox.Init(espObj)
-    -- Проблема 10: Уходим от индексов 1-8 к структурированным именам линий
+    -- Именованные линии вместо индексов 1-8 (TL/TR/BL/BR + H/V) — читаемее в Update
     espObj.Drawings.CornerBox = {
         TL_H = DRAWING("Line"), TL_V = DRAWING("Line"),
         TR_H = DRAWING("Line"), TR_V = DRAWING("Line"),
@@ -34,7 +34,7 @@ function CornerBox.Init(espObj)
         line.Transparency = transparency
     end
 
-    -- Проблема 9: Изолируем CustomData в приватный неймспейс
+    -- Приватный неймспейс модуля в CustomData (кэш для dirty-check свойств)
     espObj.CustomData.CornerBox = {
         LastThickness = thickness,
         LastColor = color,
@@ -61,7 +61,7 @@ function CornerBox.Update(espObj, renderData)
 
     local dynT        = set.BoxThickness or 2.5
     local cornerScale = set.CornerScale or 0.25
-    local halfT       = dynT * 0.5 -- Проблема 8: сохраняем float до этапа вычисления координат
+    local halfT       = dynT * 0.5 -- держим float до округления координат
 
     local minLen = 3
     local maxLen = w * 0.5
@@ -72,7 +72,7 @@ function CornerBox.Update(espObj, renderData)
         len = maxLen
     end
 
-    -- Проблема 8: Выравнивание без потери точности halfT
+    -- Пиксельное выравнивание координат
     local roundedX = math_floor(x)
     local roundedY = math_floor(y)
     local roundedW = math_floor(w)
@@ -108,7 +108,7 @@ function CornerBox.Update(espObj, renderData)
     local color = set.BoxColor or Color3.fromRGB(0, 255, 120)
     local transp = set.BoxTransparency or 1
 
-    -- Проблема 7: Оптимальное обновление свойств через dirty check
+    -- Dirty-check: пишем свойства линий только когда они реально поменялись
     local updateThickness = (dynT ~= cache.LastThickness)
     local updateColor = (color ~= cache.LastColor)
     local updateTransparency = (transp ~= cache.LastTransparency)
