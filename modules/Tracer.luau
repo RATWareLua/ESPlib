@@ -62,18 +62,6 @@ local function offscreenPoint(targetPos, originMode)
 
     local dir = -flat.Unit
 
-    -- Единственный спец-кейс: в first-person цель ровно/почти за спиной может давать
-    -- endpoint сверху, и bottom-трассер рисует бесполезную вертикаль через весь экран.
-    -- Для bottom оставляем endpoint снизу; для top симметрично сверху.
-    local _, visible = Camera:WorldToViewportPoint(targetPos)
-    if not visible and dir.X > -0.08 and dir.X < 0.08 then
-        if originMode == "top" and dir.Y > 0.9 then
-            return cx, 0
-        elseif (originMode == nil or originMode == "bottom") and dir.Y < -0.9 then
-            return cx, vp.Y
-        end
-    end
-
     -- Пересечение луча (cx,cy)+t*dir с прямоугольником экрана: ближайшая граница
     local t = math_huge
     if dir.X > 0 then t = math_min(t, (vp.X - cx) / dir.X)
@@ -82,10 +70,6 @@ local function offscreenPoint(targetPos, originMode)
     elseif dir.Y < 0 then t = math_min(t, -cy / dir.Y) end
 
     return cx + dir.X * t, cy + dir.Y * t
-end
-
-local function inViewport(x, y, vp)
-    return x >= 0 and x <= vp.X and y >= 0 and y <= vp.Y
 end
 
 function Tracer.Init(espObj)
@@ -127,23 +111,12 @@ function Tracer.Update(espObj, renderData)
 
     local set = espObj.Settings
 
-    -- Точка цели: на экране — низ бокса; если эта точка уже за viewport,
-    -- кладём endpoint на край экрана по arws-направлению.
+    -- Точка цели: на экране — низ бокса; вне экрана/за спиной — старая arws-точка у края.
     local tx, ty
     local vp = Camera.ViewportSize
     if renderData.OnScreen then
         tx = renderData.X + renderData.W * 0.5
         ty = renderData.Y + renderData.H
-        if not inViewport(tx, ty, vp) then
-            tx, ty = offscreenPoint(cf.Position, set.TracerOrigin)
-            if not tx then
-                if cache.Shown then
-                    line.Visible = false
-                    cache.Shown = false
-                end
-                return
-            end
-        end
     else
         tx, ty = offscreenPoint(cf.Position, set.TracerOrigin)
         if not tx then
@@ -152,6 +125,21 @@ function Tracer.Update(espObj, renderData)
                 cache.Shown = false
             end
             return
+        end
+
+        -- Narrow fix for the original bug only: bottom-origin tracer to a target
+        -- almost exactly behind the camera should not draw a full-screen vertical line.
+        local projected = Camera:WorldToViewportPoint(cf.Position)
+        local mode = set.TracerOrigin or "bottom"
+        if mode == "bottom" and projected.Z < 0 then
+            local cx = vp.X * 0.5
+            if tx > cx - 2 and tx < cx + 2 and ty < vp.Y * 0.5 then
+                if cache.Shown then
+                    line.Visible = false
+                    cache.Shown = false
+                end
+                return
+            end
         end
     end
 
