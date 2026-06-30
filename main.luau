@@ -110,13 +110,16 @@ local function GetTargetCFAndSize(instance, settings)
 end
 
 local function ProjectVolume(camera, cf, size, isStatic, minSize)
+    local camCF = camera.CFrame
     local x, y, w, h
     local anyVisible = false
 
     if isStatic then
+        -- 2D Проекция по высоте (Биллборд, ориентированный по вектору вверх камеры — предотвращает схлопывание вида сверху)
+        local camUp = camCF.UpVector
         local halfHeight = size.Y * 0.5
-        local tp = camera:WorldToViewportPoint(cf.Position + V3(0, halfHeight, 0))
-        local bp = camera:WorldToViewportPoint(cf.Position - V3(0, halfHeight, 0))
+        local tp = camera:WorldToViewportPoint(cf.Position + camUp * halfHeight)
+        local bp = camera:WorldToViewportPoint(cf.Position - camUp * halfHeight)
 
         if tp.Z > 0 and bp.Z > 0 then
             anyVisible = true
