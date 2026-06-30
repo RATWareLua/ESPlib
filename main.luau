@@ -3,8 +3,8 @@
 
 local ESPLibrary = {
     Objects = {},       
-    Modules = {},       
-    ModuleOrder = {},   
+    Modules = {},       -- Хранилище модулей для прямого доступа [имя] -> модуль
+    ModuleOrder = {},   -- Массив {Name, Module} отсортированный по приоритету для детерминированного рендера
     Connections = {},   
     
     RepoURL = "https://raw.githubusercontent.com/RATWareLua/ESPlib/refs/heads/main/modules/",
@@ -13,14 +13,14 @@ local ESPLibrary = {
         Enabled = true,
         MaxDistance = 10000,
         MinBoxSize = 4,
-        
-        DynamicSize = 0,       -- 0 = Статический 2D бокс, 1 = 3D AABB
-        UsePrimaryPart = false,-- Использовать PrimaryPart/HRP вместо общего BBox модели
-        SizeOverride = nil,    -- Переопределение размера (Vector3)
-        CFrameOffset = nil,    -- Смещение центра (CFrame)
+        DynamicSize = 0,     
+        UsePrimaryPart = false,
+        SizeOverride = nil,    
+        CFrameOffset = nil,    
     }
 }
 
+-- Сервисы
 local Workspace = game:GetService("Workspace")
 local RS = game:GetService("RunService")
 local Camera = Workspace.CurrentCamera
@@ -30,6 +30,7 @@ local math_huge = math.huge
 local math_abs = math.abs
 local V3 = Vector3.new
 
+-- Локальный хелпер скрытия оффскрин-объектов
 local function dispatchHide(espObj)
     for _, entry in ipairs(ESPLibrary.ModuleOrder) do
         local module = entry.Module
@@ -59,16 +60,19 @@ function ESPLibrary:Import(moduleName, customUrlOrModule)
         end
     end
 
+    -- Гарантируем наличие мета-полей
     moduleTable.Priority = moduleTable.Priority or 100
     moduleTable.SettingsKey = moduleTable.SettingsKey or moduleName
 
     self.Modules[moduleName] = moduleTable
     table.insert(self.ModuleOrder, { Name = moduleName, Module = moduleTable })
     
+    -- Сортировка модулей по приоритету отрисовки (Z-Index)
     table.sort(self.ModuleOrder, function(a, b)
         return a.Module.Priority < b.Module.Priority
     end)
 
+    -- Решение Проблемы 1: Поздний импорт модулей (Инициализируем модуль на уже созданных объектах)
     for _, espObj in pairs(self.Objects) do
         if espObj.Settings[moduleTable.SettingsKey] and not espObj.Drawings[moduleName] then
             if moduleTable.Init then
@@ -92,9 +96,7 @@ end
 
 local function GetTargetCFAndSize(instance, settings)
     if settings.UsePrimaryPart and instance:IsA("Model") then
-        local primary = instance.PrimaryPart 
-            or instance:FindFirstChild("HumanoidRootPart") 
-            or instance:FindFirstChildWhichIsA("BasePart")
+        local primary = instance.PrimaryPart or instance:FindFirstChildWhichIsA("BasePart")
         if primary then
             return primary.CFrame, primary.Size
         end
@@ -115,7 +117,6 @@ local function ProjectVolume(camera, cf, size, isStatic, minSize)
     local anyVisible = false
 
     if isStatic then
-        -- 2D Проекция по высоте (Биллборд, ориентированный по вектору вверх камеры — предотвращает схлопывание вида сверху)
         local camUp = camCF.UpVector
         local halfHeight = size.Y * 0.5
         local tp = camera:WorldToViewportPoint(cf.Position + camUp * halfHeight)
@@ -190,6 +191,7 @@ function ESPLibrary:Add(instance, customSettings)
         CustomData = {}
     }
     
+    -- Решение Проблемы 4: pcall с выводом ошибок в лог при инициализации
     for _, entry in ipairs(self.ModuleOrder) do
         local modName = entry.Name
         local module = entry.Module
@@ -225,6 +227,7 @@ function ESPLibrary:Remove(instance)
     end
 end
 
+-- Решение Проблемы 5: Контроль жизненного цикла через метод Start()
 function ESPLibrary:Start()
     if self.Connections.Render then
         self.Connections.Render:Disconnect()
@@ -300,6 +303,7 @@ function ESPLibrary:Destroy()
     self.ModuleOrder = {}
 end
 
+-- Автозапуск рендера при импорте либы
 ESPLibrary:Start()
 
 return ESPLibrary
