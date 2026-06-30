@@ -1,12 +1,10 @@
 --!nocheck
 -- Universal ESP Framework - Core (main.luau)
--- Чистый математический движок проекций. Без привязки к игре.
 
 local ESPLibrary = {
     Objects = {},       
-    Modules = {},       -- Хранилище модулей для прямого доступа [имя] -> модуль
-    ModuleOrder = {},   -- Массив {Name, Module} отсортированный по приоритету для детерминированного рендера
-    Connections = {},   
+    Modules = {},       
+    ModuleOrder = {},   
     
     RepoURL = "https://raw.githubusercontent.com/RATWareLua/ESPlib/refs/heads/main/modules/",
     
@@ -14,16 +12,13 @@ local ESPLibrary = {
         Enabled = true,
         MaxDistance = 10000,
         MinBoxSize = 4,
-        
-        -- Математические примитивы управления размером
-        DynamicSize = 0,       -- 0 = Камерно-ориентированная проекция высоты (Биллборд), 1 = Полный 3D AABB
-        UsePrimaryPart = false,-- Использовать PrimaryPart вместо общего BBox модели
-        SizeOverride = nil,    -- Кастомный Vector3 размер (игнорировать физический размер инстанса)
-        CFrameOffset = nil,    -- Кастомный CFrame оффсет для смещения центра проекции
+        DynamicSize = 0,     
+        UsePrimaryPart = false,
+        SizeOverride = nil,    
+        CFrameOffset = nil,    
     }
 }
 
--- Сервисы
 local Workspace = game:GetService("Workspace")
 local RS = game:GetService("RunService")
 local Camera = Workspace.CurrentCamera
@@ -33,7 +28,6 @@ local math_huge = math.huge
 local math_abs = math.abs
 local V3 = Vector3.new
 
--- Локальный хелпер скрытия оффскрин-объектов
 local function dispatchHide(espObj)
     for _, entry in ipairs(ESPLibrary.ModuleOrder) do
         local module = entry.Module
@@ -63,19 +57,16 @@ function ESPLibrary:Import(moduleName, customUrlOrModule)
         end
     end
 
-    -- Гарантируем наличие мета-полей
     moduleTable.Priority = moduleTable.Priority or 100
     moduleTable.SettingsKey = moduleTable.SettingsKey or moduleName
 
     self.Modules[moduleName] = moduleTable
     table.insert(self.ModuleOrder, { Name = moduleName, Module = moduleTable })
     
-    -- Сортировка модулей по приоритету отрисовки (Z-Index)
     table.sort(self.ModuleOrder, function(a, b)
         return a.Module.Priority < b.Module.Priority
     end)
 
-    -- Поздний импорт модулей (Инициализируем модуль на уже созданных объектах)
     for _, espObj in pairs(self.Objects) do
         if espObj.Settings[moduleTable.SettingsKey] and not espObj.Drawings[moduleName] then
             if moduleTable.Init then
@@ -119,8 +110,6 @@ local function ProjectVolume(camera, cf, size, isStatic, minSize)
     local anyVisible = false
 
     if isStatic then
-        -- ФИКС: Вместо локального camCF.UpVector проецируем реальную физическую мировую ось Y
-        -- Это дает 100% математически точную привязку рамки к голове и ногам под ЛЮБЫМ углом камеры.
         local halfHeight = size.Y * 0.5
         local tp = camera:WorldToViewportPoint(cf.Position + V3(0, halfHeight, 0))
         local bp = camera:WorldToViewportPoint(cf.Position - V3(0, halfHeight, 0))
@@ -229,7 +218,6 @@ function ESPLibrary:Remove(instance)
     end
 end
 
--- Контроль жизненного цикла через метод Start()
 function ESPLibrary:Start()
     if self.Connections.Render then
         self.Connections.Render:Disconnect()
@@ -305,7 +293,6 @@ function ESPLibrary:Destroy()
     self.ModuleOrder = {}
 end
 
--- Автозапуск рендера при импорте либы
 ESPLibrary:Start()
 
 return ESPLibrary
