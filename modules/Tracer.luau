@@ -1,8 +1,8 @@
 --!nocheck
 -- Module: Tracer.luau
 -- Линия от курсора/центра к цели. На экране — к низу бокса; вне экрана/за спиной —
--- к точке у края экрана в направлении цели (метод arws, через XZ-фрейм, т.к.
--- WorldToViewportPoint за камерой даёт мусор). Опирается на renderData.WorldCF.
+-- к точке у края экрана в направлении цели (метод arws через XZ-фрейм).
+-- Опирается на renderData.WorldCF.
 
 local Tracer = {
     Priority = 20,            -- рисуется после бокса
@@ -44,14 +44,22 @@ local function originPoint(vp, mode)
     end
 end
 
--- Точка-цель для off-screen/за-спиной случая. Экранное направление к цели считается
--- в горизонтальном XZ-фрейме у игрока, смотрящем на камеру (как в arws) — корректно
--- на все 360°. Эндпоинт кладётся на ГРАНИЦУ экрана в этом направлении (а не на круг),
--- чтобы трассер был полноразмерным и не обрывался.
+local function hideLine(line, cache)
+    if cache.Shown then
+        line.Visible = false
+        cache.Shown = false
+    end
+end
+
+-- Точка-цель для off-screen/за-спиной случая. Это старая arws-модель: направление
+-- считается в горизонтальном XZ-фрейме, поэтому pitch камеры не ломает привычный радар.
 local function offscreenPoint(targetPos)
     local char = LocalPlayer.Character
     local root = char and char.PrimaryPart
     if not root then return nil end
+
+    local vp = Camera.ViewportSize
+    local cx, cy = vp.X * 0.5, vp.Y * 0.5
 
     local rootP = root.Position
     local camP = Camera.CFrame.Position
@@ -59,9 +67,7 @@ local function offscreenPoint(targetPos)
     local flat = V2(rel.X, rel.Z)
     if flat.Magnitude < 0.01 then return nil end
 
-    local dir = -flat.Unit  -- направление от центра экрана к цели
-    local vp = Camera.ViewportSize
-    local cx, cy = vp.X * 0.5, vp.Y * 0.5
+    local dir = -flat.Unit
 
     -- Пересечение луча (cx,cy)+t*dir с прямоугольником экрана: ближайшая граница
     local t = math_huge
@@ -69,7 +75,6 @@ local function offscreenPoint(targetPos)
     elseif dir.X < 0 then t = math_min(t, -cx / dir.X) end
     if dir.Y > 0 then t = math_min(t, (vp.Y - cy) / dir.Y)
     elseif dir.Y < 0 then t = math_min(t, -cy / dir.Y) end
-
     return cx + dir.X * t, cy + dir.Y * t
 end
 
@@ -103,32 +108,27 @@ function Tracer.Update(espObj, renderData)
 
     -- Реально скрыт (выключен / вне радиуса / нет родителя): WorldCF отсутствует
     if not cf or not Camera then
-        if cache.Shown then
-            line.Visible = false
-            cache.Shown = false
-        end
+        hideLine(line, cache)
         return
     end
 
     local set = espObj.Settings
 
-    -- Точка цели: на экране — низ бокса; вне экрана/за спиной — индикатор у края
+    -- Точка цели: на экране — низ бокса; вне экрана/за спиной — старая arws-точка у края.
     local tx, ty
+    local vp = Camera.ViewportSize
     if renderData.OnScreen then
         tx = renderData.X + renderData.W * 0.5
         ty = renderData.Y + renderData.H
     else
         tx, ty = offscreenPoint(cf.Position)
         if not tx then
-            if cache.Shown then
-                line.Visible = false
-                cache.Shown = false
-            end
+            hideLine(line, cache)
             return
         end
     end
 
-    local ox, oy = originPoint(Camera.ViewportSize, set.TracerOrigin)
+    local ox, oy = originPoint(vp, set.TracerOrigin)
     line.From = V2(ox, oy)
     line.To = V2(tx, ty)
 
