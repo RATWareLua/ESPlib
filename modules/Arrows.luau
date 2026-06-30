@@ -14,8 +14,6 @@ local CF = CFrame.new
 
 local cloneref = cloneref or function(o) return o end
 local Workspace = cloneref(game:GetService("Workspace"))
-local Players = cloneref(game:GetService("Players"))
-local LocalPlayer = Players.LocalPlayer
 
 local Camera = Workspace.CurrentCamera
 Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
@@ -31,20 +29,19 @@ local function hide(triangle, cache)
     end
 end
 
-local function relativeToLocalPlayer(targetPos)
-    local char = LocalPlayer.Character
-    local root = char and char.PrimaryPart
-    if not root or not Camera then return nil end
+local function screenDirection(targetPos)
+    local camCF = Camera.CFrame
+    local look = camCF.LookVector
+    local flatLook = V3(look.X, 0, look.Z)
+    if flatLook.Magnitude <= 0.01 then return nil end
 
-    local rootP = root.Position
-    local camP = Camera.CFrame.Position
-    local relative = CF(V3(rootP.X, camP.Y, rootP.Z), camP):PointToObjectSpace(targetPos)
+    local camPos = camCF.Position
+    local yawFrame = CF(camPos, camPos + flatLook)
+    local relative = yawFrame:PointToObjectSpace(targetPos)
+    local dir = V2(relative.X, relative.Z)
+    if dir.Magnitude <= 0.01 then return nil end
 
-    return V2(relative.X, relative.Z)
-end
-
-local function toScreenCenter(v)
-    return Camera.ViewportSize * 0.5 - v
+    return dir.Unit
 end
 
 local function rotatedBase(direction, base, sideLength)
@@ -95,8 +92,8 @@ function Arrows.Update(espObj, renderData)
         return
     end
 
-    local rel = relativeToLocalPlayer(cf.Position)
-    if not rel or rel.Magnitude <= 0.01 then
+    local direction = screenDirection(cf.Position)
+    if not direction then
         hide(triangle, cache)
         return
     end
@@ -106,14 +103,14 @@ function Arrows.Update(espObj, renderData)
     local height = set.ArrowHeight or 16
     local width = set.ArrowWidth or 16
 
-    local direction = rel.Unit
+    local center = Camera.ViewportSize * 0.5
     local base = direction * dist
     local baseL, baseR = rotatedBase(direction, base, width * 0.5)
     local tip = direction * (dist + height)
 
-    triangle.PointA = toScreenCenter(baseL)
-    triangle.PointB = toScreenCenter(baseR)
-    triangle.PointC = toScreenCenter(tip)
+    triangle.PointA = center - baseL
+    triangle.PointB = center - baseR
+    triangle.PointC = center - tip
 
     local color = set.ArrowColor or set.BoxColor or DEFAULT_COLOR
     local thickness = set.ArrowThickness or 1
