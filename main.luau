@@ -314,6 +314,7 @@ function ESPLibrary:Add(instance, customSettings)
         UpdateList = {},          -- скомпилированные активные Update-модули
         RenderData = {            -- переиспользуемый стол кадра (без аллокаций)
             OnScreen = true, Distance = 0, X = 0, Y = 0, W = 0, H = 0,
+            WorldCF = nil, WorldSize = nil,  -- мировой трансформ для 3D-модулей
         },
         IsModel = instance:IsA("Model"),
         IsPart = instance:IsA("BasePart"),
@@ -431,6 +432,11 @@ function ESPLibrary:Start()
                             rd.OnScreen = true
                             rd.Distance = math_sqrt(distSq)
                             rd.X, rd.Y, rd.W, rd.H = x, y, w, h
+                            -- Уже разрешённый мировой трансформ цели — для модулей,
+                            -- которым нужна 3D-геометрия (3D-бокс, скелет, свои якоря).
+                            -- Они сами проецируют нужные точки; ядро не считает лишнего.
+                            rd.WorldCF = cf
+                            rd.WorldSize = size
 
                             local list = espObj.UpdateList
                             if safe then
