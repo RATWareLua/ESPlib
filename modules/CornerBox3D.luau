@@ -13,6 +13,7 @@ local CornerBox3D = {
 local DRAWING = Drawing.new
 local V2 = Vector2.new
 local V3 = Vector3.new
+local math_sqrt = math.sqrt
 
 local cloneref = cloneref or function(o) return o end
 local Workspace = cloneref(game:GetService("Workspace"))
@@ -136,6 +137,11 @@ function CornerBox3D.Update(espObj, renderData)
 
     local set = espObj.Settings
     local frac = set.Corner3DScale or 0.3
+    local thickness = set.Box3DThickness or set.BoxThickness or 1.5
+    -- Вынос скобки ЗА вершину на полтолщины — заполняет внешний стык в углу, как
+    -- уголки 2D-бокса вылезают за угол на off. Без выноса плоские торцы рёбер
+    -- (особенно толстого контура) не перекрываются в вершине и дают «ступеньку».
+    local off = thickness * 0.5
 
     -- Скобки: отрезок от вершины внутрь ребра на долю frac (+ контур под ним)
     for k = 1, 24 do
@@ -145,9 +151,12 @@ function CornerBox3D.Update(espObj, renderData)
         local o = outlines and outlines[k]
         if PV[a] and PV[b] then
             local ax, ay = PX[a], PY[a]
-            local bx, by = PX[b], PY[b]
-            local from = V2(ax, ay)
-            local to = V2(ax + (bx - ax) * frac, ay + (by - ay) * frac)
+            local dx, dy = PX[b] - ax, PY[b] - ay
+            -- ext = off / |dir|: сдвиг начала на off пикселей назад вдоль ребра (за вершину)
+            local mag = math_sqrt(dx * dx + dy * dy)
+            local ext = mag > 0 and (off / mag) or 0
+            local from = V2(ax - dx * ext, ay - dy * ext)
+            local to = V2(ax + dx * frac, ay + dy * frac)
             line.From = from
             line.To = to
             line.Visible = true
@@ -165,7 +174,6 @@ function CornerBox3D.Update(espObj, renderData)
 
     -- Свойства — через dirty-check
     local color = set.BoxColor or DEFAULT_COLOR
-    local thickness = set.Box3DThickness or set.BoxThickness or 1.5
     local transp = set.BoxTransparency or 1
 
     if color ~= cache.LastColor or thickness ~= cache.LastThickness or transp ~= cache.LastTransparency then

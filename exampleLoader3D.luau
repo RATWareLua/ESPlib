@@ -31,6 +31,8 @@ local BASE_ESP_SETTINGS = {
     Corner3DScale   = 0.3,                      -- длина угловых скобок (доля ребра)
     TracerThickness = 1.5,                      -- толщина трассера
     TracerOrigin    = "mouse",                  -- "bottom"/"top"/"center"/"mouse"
+    Outline         = true,                     -- контур контрастного цвета под рёбрами 3D-бокса
+    OutlineThickness = 2,                       -- доп. толщина контура (px)
     MinBoxSize      = 4,
     MaxDistance     = 10000,
     -- TracerColor не задаём -> трассер берёт BoxColor (цвет команды)

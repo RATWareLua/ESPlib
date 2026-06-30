@@ -3,7 +3,6 @@
 -- Линия от курсора/центра к цели. На экране — к низу бокса; вне экрана/за спиной —
 -- к точке у края экрана в направлении цели (метод arws, через XZ-фрейм, т.к.
 -- WorldToViewportPoint за камерой даёт мусор). Опирается на renderData.WorldCF.
--- Опционально (Outline) рисует подложку-контур контрастного цвета ПОД линией.
 
 local Tracer = {
     Priority = 20,            -- рисуется после бокса
@@ -30,11 +29,6 @@ Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
 end)
 
 local DEFAULT_COLOR = Color3.fromRGB(255, 50, 50)
-
--- Противоположный (инвертированный) цвет для контура
-local function invert(c)
-    return Color3.new(1 - c.R, 1 - c.G, 1 - c.B)
-end
 
 -- Точка-начало трассера на экране в зависимости от режима
 local function originPoint(vp, mode)
@@ -91,21 +85,8 @@ function Tracer.Init(espObj)
     line.Transparency = transp
     line.Color        = color
 
-    -- Контур: подложка контрастного цвета, ПОД core по ZIndex (core рисуется поверх)
-    local outline
-    if s.Outline then
-        outline = DRAWING("Line")
-        outline.Visible      = false
-        outline.Thickness    = thickness + (s.OutlineThickness or 2)
-        outline.Transparency = transp
-        outline.Color        = s.OutlineColor or invert(color)
-        outline.ZIndex       = 0
-        line.ZIndex          = 1
-    end
-
     espObj.Drawings.Tracer = line
     espObj.CustomData.Tracer = {
-        Outline = outline,
         Shown = false,
         LastColor = color,
         LastThickness = thickness,
@@ -118,14 +99,12 @@ function Tracer.Update(espObj, renderData)
     if not line then return end
 
     local cache = espObj.CustomData.Tracer
-    local outline = cache.Outline
     local cf = renderData.WorldCF
 
     -- Реально скрыт (выключен / вне радиуса / нет родителя): WorldCF отсутствует
     if not cf or not Camera then
         if cache.Shown then
             line.Visible = false
-            if outline then outline.Visible = false end
             cache.Shown = false
         end
         return
@@ -143,7 +122,6 @@ function Tracer.Update(espObj, renderData)
         if not tx then
             if cache.Shown then
                 line.Visible = false
-                if outline then outline.Visible = false end
                 cache.Shown = false
             end
             return
@@ -151,14 +129,8 @@ function Tracer.Update(espObj, renderData)
     end
 
     local ox, oy = originPoint(Camera.ViewportSize, set.TracerOrigin)
-    local from = V2(ox, oy)
-    local to = V2(tx, ty)
-    line.From = from
-    line.To = to
-    if outline then
-        outline.From = from
-        outline.To = to
-    end
+    line.From = V2(ox, oy)
+    line.To = V2(tx, ty)
 
     -- Свойства — через dirty-check
     local color = set.TracerColor or set.BoxColor or DEFAULT_COLOR
@@ -167,23 +139,19 @@ function Tracer.Update(espObj, renderData)
 
     if color ~= cache.LastColor then
         line.Color = color
-        if outline and not set.OutlineColor then outline.Color = invert(color) end
         cache.LastColor = color
     end
     if thickness ~= cache.LastThickness then
         line.Thickness = thickness
-        if outline then outline.Thickness = thickness + (set.OutlineThickness or 2) end
         cache.LastThickness = thickness
     end
     if transp ~= cache.LastTransparency then
         line.Transparency = transp
-        if outline then outline.Transparency = transp end
         cache.LastTransparency = transp
     end
 
     if not cache.Shown then
         line.Visible = true
-        if outline then outline.Visible = true end
         cache.Shown = true
     end
 end
@@ -192,8 +160,6 @@ function Tracer.Destroy(espObj)
     local line = espObj.Drawings.Tracer
     if line then
         line:Remove()
-        local cache = espObj.CustomData.Tracer
-        if cache and cache.Outline then cache.Outline:Remove() end
         espObj.Drawings.Tracer = nil
         espObj.CustomData.Tracer = nil
     end
