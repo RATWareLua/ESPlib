@@ -96,7 +96,14 @@ end
 
 local function GetTargetCFAndSize(instance, settings)
     if settings.UsePrimaryPart and instance:IsA("Model") then
-        local primary = instance.PrimaryPart or instance:FindFirstChildWhichIsA("BasePart")
+        -- ВАЖНО: FindFirstChildWhichIsA("BasePart") недетерминированный — он берёт
+        -- первый по порядку репликации парт, который у части персонажей оказывается
+        -- Head, а не центром рига. Это давало фиксированный сдвиг бокса вверх на
+        -- "рандомных" таргетах (когда PrimaryPart ещё nil на момент кадра).
+        -- Опорным центром должен быть HumanoidRootPart.
+        local primary = instance.PrimaryPart
+            or instance:FindFirstChild("HumanoidRootPart")
+            or instance:FindFirstChildWhichIsA("BasePart")
         if primary then
             return primary.CFrame, primary.Size
         end
