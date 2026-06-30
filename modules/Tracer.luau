@@ -13,6 +13,10 @@ local V2 = Vector2.new
 local math_min = math.min
 local math_huge = math.huge
 
+local math_clamp = math.clamp or function(v, lo, hi)
+    return v < lo and lo or v > hi and hi or v
+end
+
 local cloneref = cloneref or function(o) return o end
 local Workspace = cloneref(game:GetService("Workspace"))
 local UserInputService = cloneref(game:GetService("UserInputService"))
@@ -71,6 +75,10 @@ local function offscreenPoint(targetPos)
     return cx + dir.X * t, cy + dir.Y * t
 end
 
+local function inViewport(x, y, vp)
+    return x >= 0 and x <= vp.X and y >= 0 and y <= vp.Y
+end
+
 function Tracer.Init(espObj)
     local s = espObj.Settings
     local thickness = s.TracerThickness or 1.5
@@ -110,11 +118,20 @@ function Tracer.Update(espObj, renderData)
 
     local set = espObj.Settings
 
-    -- Точка цели: на экране — низ бокса; вне экрана/за спиной — индикатор у края
+    -- Точка цели: на экране — низ бокса; если эта точка уже за viewport,
+    -- кладём endpoint на край экрана по screen-space направлению цели.
     local tx, ty
+    local vp = Camera.ViewportSize
     if renderData.OnScreen then
         tx = renderData.X + renderData.W * 0.5
         ty = renderData.Y + renderData.H
+        if not inViewport(tx, ty, vp) then
+            tx, ty = offscreenPoint(cf.Position)
+            if not tx then
+                tx = math_clamp(renderData.X + renderData.W * 0.5, 0, vp.X)
+                ty = math_clamp(renderData.Y + renderData.H, 0, vp.Y)
+            end
+        end
     else
         tx, ty = offscreenPoint(cf.Position)
         if not tx then
@@ -126,7 +143,7 @@ function Tracer.Update(espObj, renderData)
         end
     end
 
-    local ox, oy = originPoint(Camera.ViewportSize, set.TracerOrigin)
+    local ox, oy = originPoint(vp, set.TracerOrigin)
     line.From = V2(ox, oy)
     line.To = V2(tx, ty)
 
