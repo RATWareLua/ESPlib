@@ -94,6 +94,32 @@ local function MergeSettings(default, custom)
     return result
 end
 
+-- Центр «скелета» персонажа: AABB ТОЛЬКО по родным партам тела.
+-- Прямые BasePart-дети модели — это части тела (Head/Torso/конечности/HRP).
+-- Аксессуары (шляпы, причёски, бэкпаки, тулзы) лежат глубже — их Handle сидит
+-- внутри Accessory/Tool и прямым ребёнком модели НЕ является, поэтому сюда не
+-- попадает. Иначе высокий хэт растягивал бы бокс и тянул центр вверх, причём
+-- по-разному у каждого игрока (у всех свой набор аксов) — это и был источник
+-- «уезжающего вверх» бокса на рандомных таргетах.
+local function GetBodyCenter(model)
+    local min, max
+    for _, p in ipairs(model:GetChildren()) do
+        if p:IsA("BasePart") then
+            local pos = p.Position
+            if min then
+                min = min:Min(pos)
+                max = max:Max(pos)
+            else
+                min, max = pos, pos
+            end
+        end
+    end
+    if min then
+        return (min + max) * 0.5
+    end
+    return nil
+end
+
 local function GetTargetCFAndSize(instance, settings)
     if settings.UsePrimaryPart and instance:IsA("Model") then
         -- ВАЖНО: FindFirstChildWhichIsA("BasePart") недетерминированный — он берёт
@@ -256,8 +282,21 @@ function ESPLibrary:Start()
             local cf, size = GetTargetCFAndSize(instance, settings)
             if not cf then continue end
 
+            if settings.SizeOverride then
+                size = settings.SizeOverride
+                -- Фикс «бокс уезжает вверх»: фиксированный SizeOverride требует якоря в
+                -- центре ТЕЛА. GetBoundingBox считает AABB по всем партам, включая Handle
+                -- аксессуаров (шляпы/причёски/бэкпаки) — высокий акс тянет центр вверх, и
+                -- по-разному у каждого игрока. Берём центр только по родным партам тела.
+                if instance:IsA("Model") then
+                    local bodyCenter = GetBodyCenter(instance)
+                    if bodyCenter then
+                        cf = (cf - cf.Position) + bodyCenter
+                    end
+                end
+            end
+
             if settings.CFrameOffset then cf = cf * settings.CFrameOffset end
-            if settings.SizeOverride then size = settings.SizeOverride end
 
             local distance = (cf.Position - camPos).Magnitude
             if distance > settings.MaxDistance then
