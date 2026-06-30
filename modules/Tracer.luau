@@ -1,7 +1,7 @@
 --!nocheck
 -- Module: Tracer.luau
 -- Линия от курсора/центра к цели. На экране — к низу бокса; вне экрана/за спиной —
--- к точке у края экрана в направлении цели (метод arws через XZ-фрейм).
+-- к точке у края экрана в том же screen-space направлении, что и Arrows.
 -- Опирается на renderData.WorldCF.
 
 local Tracer = {
@@ -11,16 +11,12 @@ local Tracer = {
 
 local DRAWING = Drawing.new
 local V2 = Vector2.new
-local V3 = Vector3.new
-local CF = CFrame.new
 local math_min = math.min
 local math_huge = math.huge
 
 local cloneref = cloneref or function(o) return o end
 local Workspace = cloneref(game:GetService("Workspace"))
 local UserInputService = cloneref(game:GetService("UserInputService"))
-local Players = cloneref(game:GetService("Players"))
-local LocalPlayer = Players.LocalPlayer
 
 -- Камера держится свежей через сигнал, а не читается каждый кадр
 local Camera = Workspace.CurrentCamera
@@ -51,23 +47,30 @@ local function hideLine(line, cache)
     end
 end
 
--- Точка-цель для off-screen/за-спиной случая. Это старая arws-модель: направление
--- считается в горизонтальном XZ-фрейме, поэтому pitch камеры не ломает привычный радар.
-local function offscreenPoint(targetPos)
-    local char = LocalPlayer.Character
-    local root = char and char.PrimaryPart
-    if not root then return nil end
+local function screenDirection(targetPos)
+    local projected = Camera:WorldToViewportPoint(targetPos)
+    local center = Camera.ViewportSize * 0.5
+    local dir = V2(projected.X - center.X, projected.Y - center.Y)
 
+    -- У точки за камерой perspective projection зеркалится; Arrows чинят это тем же flip.
+    if projected.Z < 0 then
+        dir = -dir
+    end
+
+    if dir.Magnitude <= 0.01 then
+        return projected.Z < 0 and V2(0, 1) or nil
+    end
+
+    return dir.Unit
+end
+
+-- Точка-цель для off-screen/за-спиной случая. Direction берём из той же модели,
+-- что и стрелки, чтобы endpoint не перепрыгивал на противоположный край экрана.
+local function offscreenPoint(targetPos)
     local vp = Camera.ViewportSize
     local cx, cy = vp.X * 0.5, vp.Y * 0.5
-
-    local rootP = root.Position
-    local camP = Camera.CFrame.Position
-    local rel = CF(V3(rootP.X, camP.Y, rootP.Z), camP):PointToObjectSpace(targetPos)
-    local flat = V2(rel.X, rel.Z)
-    if flat.Magnitude < 0.01 then return nil end
-
-    local dir = -flat.Unit
+    local dir = screenDirection(targetPos)
+    if not dir then return nil end
 
     -- Пересечение луча (cx,cy)+t*dir с прямоугольником экрана: ближайшая граница
     local t = math_huge
