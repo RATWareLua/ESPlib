@@ -84,7 +84,13 @@ function Arrows.Update(espObj, renderData)
     local cache = espObj.CustomData.Arrows
     local cf = renderData.WorldCF
 
-    if not cf or not Camera or renderData.OnScreen then
+    if not cf or not Camera then
+        hide(triangle, cache)
+        return
+    end
+
+    local _, visible = Camera:WorldToViewportPoint(cf.Position)
+    if visible then
         hide(triangle, cache)
         return
     end
