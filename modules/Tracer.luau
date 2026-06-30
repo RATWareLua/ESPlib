@@ -1,7 +1,7 @@
 --!nocheck
 -- Module: Tracer.luau
 -- Линия от курсора/центра к цели. На экране — к низу бокса; вне экрана/за спиной —
--- к точке у края экрана в направлении цели (метод arws через XZ-фрейм).
+-- к точке у края экрана по реальной screen-space проекции цели.
 -- Опирается на renderData.WorldCF.
 
 local Tracer = {
@@ -11,16 +11,12 @@ local Tracer = {
 
 local DRAWING = Drawing.new
 local V2 = Vector2.new
-local V3 = Vector3.new
-local CF = CFrame.new
 local math_min = math.min
 local math_huge = math.huge
 
 local cloneref = cloneref or function(o) return o end
 local Workspace = cloneref(game:GetService("Workspace"))
 local UserInputService = cloneref(game:GetService("UserInputService"))
-local Players = cloneref(game:GetService("Players"))
-local LocalPlayer = Players.LocalPlayer
 
 -- Камера держится свежей через сигнал, а не читается каждый кадр
 local Camera = Workspace.CurrentCamera
@@ -44,23 +40,19 @@ local function originPoint(vp, mode)
     end
 end
 
--- Точка-цель для off-screen/за-спиной случая. Это старая arws-модель: направление
--- считается в горизонтальном XZ-фрейме, поэтому pitch камеры не ломает привычный радар.
-local function offscreenPoint(targetPos, originMode)
-    local char = LocalPlayer.Character
-    local root = char and char.PrimaryPart
-    if not root then return nil end
+local function hideLine(line, cache)
+    if cache.Shown then
+        line.Visible = false
+        cache.Shown = false
+    end
+end
 
+local function edgePointFromScreenPoint(screenPoint)
     local vp = Camera.ViewportSize
     local cx, cy = vp.X * 0.5, vp.Y * 0.5
-
-    local rootP = root.Position
-    local camP = Camera.CFrame.Position
-    local rel = CF(V3(rootP.X, camP.Y, rootP.Z), camP):PointToObjectSpace(targetPos)
-    local flat = V2(rel.X, rel.Z)
-    if flat.Magnitude < 0.01 then return nil end
-
-    local dir = -flat.Unit
+    local dir = V2(screenPoint.X - cx, screenPoint.Y - cy)
+    if dir.Magnitude < 0.01 then return nil end
+    dir = dir.Unit
 
     -- Пересечение луча (cx,cy)+t*dir с прямоугольником экрана: ближайшая граница
     local t = math_huge
@@ -70,6 +62,10 @@ local function offscreenPoint(targetPos, originMode)
     elseif dir.Y < 0 then t = math_min(t, -cy / dir.Y) end
 
     return cx + dir.X * t, cy + dir.Y * t
+end
+
+local function inViewport(x, y, vp)
+    return x >= 0 and x <= vp.X and y >= 0 and y <= vp.Y
 end
 
 function Tracer.Init(espObj)
@@ -102,44 +98,40 @@ function Tracer.Update(espObj, renderData)
 
     -- Реально скрыт (выключен / вне радиуса / нет родителя): WorldCF отсутствует
     if not cf or not Camera then
-        if cache.Shown then
-            line.Visible = false
-            cache.Shown = false
-        end
+        hideLine(line, cache)
         return
     end
 
     local set = espObj.Settings
 
-    -- Точка цели: на экране — низ бокса; вне экрана/за спиной — старая arws-точка у края.
+    local projected = Camera:WorldToViewportPoint(cf.Position)
+
+    -- За камерой нет достоверной 2D-проекции. Не рисуем «примерный» радарный трассер,
+    -- иначе при повороте от цели появляются ложные линии в случайные края экрана.
+    if projected.Z <= 0 then
+        hideLine(line, cache)
+        return
+    end
+
+    -- Точка цели: на экране — низ бокса; если низ бокса уже ушёл за viewport,
+    -- продолжаем линию к краю по реальной проекции центра цели.
     local tx, ty
     local vp = Camera.ViewportSize
     if renderData.OnScreen then
         tx = renderData.X + renderData.W * 0.5
         ty = renderData.Y + renderData.H
-    else
-        tx, ty = offscreenPoint(cf.Position, set.TracerOrigin)
-        if not tx then
-            if cache.Shown then
-                line.Visible = false
-                cache.Shown = false
-            end
-            return
-        end
-
-        -- Narrow fix for the original bug only: bottom-origin tracer to a target
-        -- almost exactly behind the camera should not draw a full-screen vertical line.
-        local projected = Camera:WorldToViewportPoint(cf.Position)
-        local mode = set.TracerOrigin or "bottom"
-        if mode == "bottom" and projected.Z < 0 then
-            local cx = vp.X * 0.5
-            if tx > cx - 2 and tx < cx + 2 and ty < vp.Y * 0.5 then
-                if cache.Shown then
-                    line.Visible = false
-                    cache.Shown = false
-                end
+        if not inViewport(tx, ty, vp) then
+            tx, ty = edgePointFromScreenPoint(projected)
+            if not tx then
+                hideLine(line, cache)
                 return
             end
+        end
+    else
+        tx, ty = edgePointFromScreenPoint(projected)
+        if not tx then
+            hideLine(line, cache)
+            return
         end
     end
 
