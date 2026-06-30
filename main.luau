@@ -1,5 +1,6 @@
 --!nocheck
 -- Universal ESP Framework - Core (main.luau)
+-- Чистый математический движок проекций. Без привязки к игре.
 
 local ESPLibrary = {
     Objects = {},       
@@ -13,10 +14,12 @@ local ESPLibrary = {
         Enabled = true,
         MaxDistance = 10000,
         MinBoxSize = 4,
-        DynamicSize = 0,     
-        UsePrimaryPart = false,
-        SizeOverride = nil,    
-        CFrameOffset = nil,    
+        
+        -- Математические примитивы управления размером
+        DynamicSize = 0,       -- 0 = Камерно-ориентированная проекция высоты (Биллборд), 1 = Полный 3D AABB
+        UsePrimaryPart = false,-- Использовать PrimaryPart вместо общего BBox модели
+        SizeOverride = nil,    -- Кастомный Vector3 размер (игнорировать физический размер инстанса)
+        CFrameOffset = nil,    -- Кастомный CFrame оффсет для смещения центра проекции
     }
 }
 
@@ -72,7 +75,7 @@ function ESPLibrary:Import(moduleName, customUrlOrModule)
         return a.Module.Priority < b.Module.Priority
     end)
 
-    -- Решение Проблемы 1: Поздний импорт модулей (Инициализируем модуль на уже созданных объектах)
+    -- Поздний импорт модулей (Инициализируем модуль на уже созданных объектах)
     for _, espObj in pairs(self.Objects) do
         if espObj.Settings[moduleTable.SettingsKey] and not espObj.Drawings[moduleName] then
             if moduleTable.Init then
@@ -112,15 +115,15 @@ local function GetTargetCFAndSize(instance, settings)
 end
 
 local function ProjectVolume(camera, cf, size, isStatic, minSize)
-    local camCF = camera.CFrame
     local x, y, w, h
     local anyVisible = false
 
     if isStatic then
-        local camUp = camCF.UpVector
+        -- ФИКС: Вместо локального camCF.UpVector проецируем реальную физическую мировую ось Y
+        -- Это дает 100% математически точную привязку рамки к голове и ногам под ЛЮБЫМ углом камеры.
         local halfHeight = size.Y * 0.5
-        local tp = camera:WorldToViewportPoint(cf.Position + camUp * halfHeight)
-        local bp = camera:WorldToViewportPoint(cf.Position - camUp * halfHeight)
+        local tp = camera:WorldToViewportPoint(cf.Position + V3(0, halfHeight, 0))
+        local bp = camera:WorldToViewportPoint(cf.Position - V3(0, halfHeight, 0))
 
         if tp.Z > 0 and bp.Z > 0 then
             anyVisible = true
@@ -191,7 +194,6 @@ function ESPLibrary:Add(instance, customSettings)
         CustomData = {}
     }
     
-    -- Решение Проблемы 4: pcall с выводом ошибок в лог при инициализации
     for _, entry in ipairs(self.ModuleOrder) do
         local modName = entry.Name
         local module = entry.Module
@@ -227,7 +229,7 @@ function ESPLibrary:Remove(instance)
     end
 end
 
--- Решение Проблемы 5: Контроль жизненного цикла через метод Start()
+-- Контроль жизненного цикла через метод Start()
 function ESPLibrary:Start()
     if self.Connections.Render then
         self.Connections.Render:Disconnect()
