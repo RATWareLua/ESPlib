@@ -14,6 +14,8 @@ local DRAWING = Drawing.new
 local V2 = Vector2.new
 local V3 = Vector3.new
 local CF = CFrame.new
+local math_min = math.min
+local math_huge = math.huge
 
 local cloneref = cloneref or function(o) return o end
 local Workspace = cloneref(game:GetService("Workspace"))
@@ -43,10 +45,11 @@ local function originPoint(vp, mode)
     end
 end
 
--- Точка-цель для off-screen/за-спиной случая: направление считается в горизонтальном
--- XZ-фрейме у игрока, смотрящем на камеру (как в arws) — корректно на все 360°.
--- Возвращает точку на круге радиусом radius от центра экрана, или nil.
-local function offscreenPoint(targetPos, radius)
+-- Точка-цель для off-screen/за-спиной случая. Экранное направление к цели считается
+-- в горизонтальном XZ-фрейме у игрока, смотрящем на камеру (как в arws) — корректно
+-- на все 360°. Эндпоинт кладётся на ГРАНИЦУ экрана в этом направлении (а не на круг),
+-- чтобы трассер был полноразмерным и не обрывался.
+local function offscreenPoint(targetPos)
     local char = LocalPlayer.Character
     local root = char and char.PrimaryPart
     if not root then return nil end
@@ -57,10 +60,18 @@ local function offscreenPoint(targetPos, radius)
     local flat = V2(rel.X, rel.Z)
     if flat.Magnitude < 0.01 then return nil end
 
-    local dir = flat.Unit
-    local center = Camera.ViewportSize * 0.5
-    local p = center - dir * radius
-    return p.X, p.Y
+    local dir = -flat.Unit  -- направление от центра экрана к цели
+    local vp = Camera.ViewportSize
+    local cx, cy = vp.X * 0.5, vp.Y * 0.5
+
+    -- Пересечение луча (cx,cy)+t*dir с прямоугольником экрана: ближайшая граница
+    local t = math_huge
+    if dir.X > 0 then t = math_min(t, (vp.X - cx) / dir.X)
+    elseif dir.X < 0 then t = math_min(t, -cx / dir.X) end
+    if dir.Y > 0 then t = math_min(t, (vp.Y - cy) / dir.Y)
+    elseif dir.Y < 0 then t = math_min(t, -cy / dir.Y) end
+
+    return cx + dir.X * t, cy + dir.Y * t
 end
 
 function Tracer.Init(espObj)
@@ -104,7 +115,7 @@ function Tracer.Update(espObj, renderData)
         tx = renderData.X + renderData.W * 0.5
         ty = renderData.Y + renderData.H
     else
-        tx, ty = offscreenPoint(cf.Position, set.TracerEdgeRadius or 300)
+        tx, ty = offscreenPoint(cf.Position)
         if not tx then
             if cache.Shown then
                 line.Visible = false
