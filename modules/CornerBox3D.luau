@@ -3,6 +3,7 @@
 -- Угловой 3D-бокс: 8 вершин мирового параллелепипеда проецируются модулем,
 -- в каждом углу рисуются короткие скобки вдоль трёх рёбер. Опирается на
 -- renderData.WorldCF / WorldSize (мировой трансформ, уже разрешённый ядром).
+-- Опционально (Outline) — подложка-контур контрастного цвета ПОД каждой скобкой.
 
 local CornerBox3D = {
     Priority = 15,
@@ -22,6 +23,11 @@ Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
 end)
 
 local DEFAULT_COLOR = Color3.fromRGB(0, 255, 120)
+
+-- Противоположный (инвертированный) цвет для контура
+local function invert(c)
+    return Color3.new(1 - c.R, 1 - c.G, 1 - c.B)
+end
 
 -- Вершины AABB (знаки по осям X,Y,Z)
 local SIGNS = {
@@ -67,7 +73,26 @@ function CornerBox3D.Init(espObj)
     end
     espObj.Drawings.CornerBox3D = lines
 
+    -- Контуры: подложки контрастного цвета, ПОД core по ZIndex
+    local outlines
+    if settings.Outline then
+        outlines = {}
+        local ocolor = settings.OutlineColor or invert(color)
+        local othick = thickness + (settings.OutlineThickness or 2)
+        for i = 1, 24 do
+            local o = DRAWING("Line")
+            o.Visible      = false
+            o.Color        = ocolor
+            o.Thickness    = othick
+            o.Transparency = transp
+            o.ZIndex       = 0
+            outlines[i] = o
+            lines[i].ZIndex = 1
+        end
+    end
+
     espObj.CustomData.CornerBox3D = {
+        Outlines = outlines,
         Shown = false,
         LastColor = color,
         LastThickness = thickness,
@@ -83,11 +108,13 @@ function CornerBox3D.Update(espObj, renderData)
     if not lines then return end
 
     local cache = espObj.CustomData.CornerBox3D
+    local outlines = cache.Outlines
     local cf = renderData.WorldCF
 
     if not renderData.OnScreen or not cf or not Camera then
         if cache.Shown then
             for i = 1, 24 do lines[i].Visible = false end
+            if outlines then for i = 1, 24 do outlines[i].Visible = false end end
             cache.Shown = false
         end
         return
@@ -110,19 +137,28 @@ function CornerBox3D.Update(espObj, renderData)
     local set = espObj.Settings
     local frac = set.Corner3DScale or 0.3
 
-    -- Скобки: отрезок от вершины внутрь ребра на долю frac
+    -- Скобки: отрезок от вершины внутрь ребра на долю frac (+ контур под ним)
     for k = 1, 24 do
         local stub = STUBS[k]
         local a, b = stub[1], stub[2]
         local line = lines[k]
+        local o = outlines and outlines[k]
         if PV[a] and PV[b] then
             local ax, ay = PX[a], PY[a]
             local bx, by = PX[b], PY[b]
-            line.From = V2(ax, ay)
-            line.To = V2(ax + (bx - ax) * frac, ay + (by - ay) * frac)
+            local from = V2(ax, ay)
+            local to = V2(ax + (bx - ax) * frac, ay + (by - ay) * frac)
+            line.From = from
+            line.To = to
             line.Visible = true
+            if o then
+                o.From = from
+                o.To = to
+                o.Visible = true
+            end
         else
             line.Visible = false
+            if o then o.Visible = false end
         end
     end
     cache.Shown = true
@@ -139,6 +175,18 @@ function CornerBox3D.Update(espObj, renderData)
             line.Thickness    = thickness
             line.Transparency = transp
         end
+
+        if outlines then
+            local ocolor = set.OutlineColor or invert(color)
+            local othick = thickness + (set.OutlineThickness or 2)
+            for i = 1, 24 do
+                local o = outlines[i]
+                o.Color        = ocolor
+                o.Thickness    = othick
+                o.Transparency = transp
+            end
+        end
+
         cache.LastColor = color
         cache.LastThickness = thickness
         cache.LastTransparency = transp
@@ -150,6 +198,10 @@ function CornerBox3D.Destroy(espObj)
     if lines then
         for i = 1, #lines do
             lines[i]:Remove()
+        end
+        local cache = espObj.CustomData.CornerBox3D
+        if cache and cache.Outlines then
+            for i = 1, 24 do cache.Outlines[i]:Remove() end
         end
         espObj.Drawings.CornerBox3D = nil
         espObj.CustomData.CornerBox3D = nil

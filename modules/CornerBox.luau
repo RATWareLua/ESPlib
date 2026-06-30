@@ -15,6 +15,11 @@ end
 
 local DEFAULT_COLOR = Color3.fromRGB(0, 255, 120)
 
+-- Противоположный (инвертированный) цвет для контура
+local function invert(c)
+    return Color3.new(1 - c.R, 1 - c.G, 1 - c.B)
+end
+
 function CornerBox.Init(espObj)
     -- Именованные линии (TL/TR/BL/BR + H/V) — читаемее в позиционировании
     local lines = {
@@ -44,9 +49,28 @@ function CornerBox.Init(espObj)
         line.Transparency = transparency
     end
 
+    -- Контуры: подложки контрастного цвета, ПОД core по ZIndex
+    local outlines
+    if settings.Outline then
+        outlines = {}
+        local ocolor = settings.OutlineColor or invert(color)
+        local othick = thickness + (settings.OutlineThickness or 2)
+        for i = 1, 8 do
+            local o = DRAWING("Line")
+            o.Visible      = false
+            o.Color        = ocolor
+            o.Thickness    = othick
+            o.Transparency = transparency
+            o.ZIndex       = 0
+            outlines[i] = o
+            list[i].ZIndex = 1
+        end
+    end
+
     -- Приватный неймспейс модуля в CustomData (кэш для dirty-check)
     espObj.CustomData.CornerBox = {
         List = list,
+        Outlines = outlines,
         Shown = false,
         LastThickness = thickness,
         LastColor = color,
@@ -60,11 +84,13 @@ function CornerBox.Update(espObj, renderData)
 
     local cache = espObj.CustomData.CornerBox
     local list = cache.List
+    local outlines = cache.Outlines
 
     if not renderData.OnScreen then
         -- Гасим только при переходе в оффскрин, а не каждый кадр
         if cache.Shown then
             for i = 1, 8 do list[i].Visible = false end
+            if outlines then for i = 1, 8 do outlines[i].Visible = false end end
             cache.Shown = false
         end
         return
@@ -118,6 +144,16 @@ function CornerBox.Update(espObj, renderData)
     lines.BR_H.From = V2(tRight, roundedY + roundedH);  lines.BR_H.To = V2(roundedX + roundedW - roundedLen, roundedY + roundedH)
     lines.BR_V.From = V2(roundedX + roundedW, tBot);    lines.BR_V.To = V2(roundedX + roundedW, roundedY + roundedH - roundedLen)
 
+    -- Контур повторяет координаты основных линий
+    if outlines then
+        for i = 1, 8 do
+            local l = list[i]
+            local o = outlines[i]
+            o.From = l.From
+            o.To = l.To
+        end
+    end
+
     local color = set.BoxColor or DEFAULT_COLOR
     local transp = set.BoxTransparency or 1
 
@@ -133,6 +169,18 @@ function CornerBox.Update(espObj, renderData)
             if updateColor then line.Color = color end
             if updateTransparency then line.Transparency = transp end
         end
+
+        if outlines then
+            local ocolor = set.OutlineColor or invert(color)
+            local othick = dynT + (set.OutlineThickness or 2)
+            for i = 1, 8 do
+                local o = outlines[i]
+                if updateThickness then o.Thickness = othick end
+                if updateColor then o.Color = ocolor end
+                if updateTransparency then o.Transparency = transp end
+            end
+        end
+
         cache.LastThickness = dynT
         cache.LastColor = color
         cache.LastTransparency = transp
@@ -141,6 +189,7 @@ function CornerBox.Update(espObj, renderData)
     -- Показываем только при переходе из оффскрина
     if not cache.Shown then
         for i = 1, 8 do list[i].Visible = true end
+        if outlines then for i = 1, 8 do outlines[i].Visible = true end end
         cache.Shown = true
     end
 end
@@ -150,6 +199,10 @@ function CornerBox.Destroy(espObj)
     if lines then
         for _, line in pairs(lines) do
             line:Remove()
+        end
+        local cache = espObj.CustomData.CornerBox
+        if cache and cache.Outlines then
+            for i = 1, 8 do cache.Outlines[i]:Remove() end
         end
         espObj.Drawings.CornerBox = nil
         espObj.CustomData.CornerBox = nil

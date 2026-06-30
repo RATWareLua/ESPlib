@@ -30,9 +30,11 @@ local BASE_ESP_SETTINGS = {
     CornerScale     = 0.25,                    -- длина уголка как доля ширины
     TracerThickness = 1.5,                     -- толщина трассера
     TracerOrigin    = "mouse",                 -- от курсора ("bottom"/"top"/"center"/"mouse")
+    Outline         = true,                    -- контур контрастного цвета под линиями
+    OutlineThickness = 2,                      -- доп. толщина контура (px)
     MinBoxSize      = 4,
     MaxDistance     = 10000,
-    -- TracerColor не задаём -> трассер берёт BoxColor (цвет команды)
+    -- TracerColor / OutlineColor не задаём -> берутся из BoxColor / его инверсии
 }
 
 -- Поведение тимчека и цвета (A: различение команд, B: подсветка цветом команды)
