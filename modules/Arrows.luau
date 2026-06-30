@@ -9,8 +9,6 @@ local Arrows = {
 
 local DRAWING = Drawing.new
 local V2 = Vector2.new
-local V3 = Vector3.new
-local CF = CFrame.new
 
 local cloneref = cloneref or function(o) return o end
 local Workspace = cloneref(game:GetService("Workspace"))
@@ -30,16 +28,18 @@ local function hide(triangle, cache)
 end
 
 local function screenDirection(targetPos)
-    local camCF = Camera.CFrame
-    local look = camCF.LookVector
-    local flatLook = V3(look.X, 0, look.Z)
-    if flatLook.Magnitude <= 0.01 then return nil end
+    local projected = Camera:WorldToViewportPoint(targetPos)
+    local center = Camera.ViewportSize * 0.5
+    local dir = V2(projected.X - center.X, projected.Y - center.Y)
 
-    local camPos = camCF.Position
-    local yawFrame = CF(camPos, camPos + flatLook)
-    local relative = yawFrame:PointToObjectSpace(targetPos)
-    local dir = V2(relative.X, relative.Z)
-    if dir.Magnitude <= 0.01 then return nil end
+    -- Behind-camera projection is mirrored by perspective math; flip it back.
+    if projected.Z < 0 then
+        dir = -dir
+    end
+
+    if dir.Magnitude <= 0.01 then
+        return projected.Z < 0 and V2(0, 1) or nil
+    end
 
     return dir.Unit
 end
@@ -108,9 +108,9 @@ function Arrows.Update(espObj, renderData)
     local baseL, baseR = rotatedBase(direction, base, width * 0.5)
     local tip = direction * (dist + height)
 
-    triangle.PointA = center - baseL
-    triangle.PointB = center - baseR
-    triangle.PointC = center - tip
+    triangle.PointA = center + baseL
+    triangle.PointB = center + baseR
+    triangle.PointC = center + tip
 
     local color = set.ArrowColor or set.BoxColor or DEFAULT_COLOR
     local thickness = set.ArrowThickness or 1
