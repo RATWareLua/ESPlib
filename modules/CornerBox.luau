@@ -79,17 +79,10 @@ function CornerBox.Update(espObj, renderData)
     local roundedH = math_floor(h)
     local roundedLen = math_floor(len)
 
-    -- Фикс: off округляется ОДИН раз и применяется симметрично на обе стороны.
-    -- floor(a - b) != a - floor(b), когда b дробное — именно это и давало
-    -- лишний пиксель смещения на стороне "-" (tLeft/tTop), из-за чего
-    -- линии угла вылезали друг за друга. round-to-nearest минимизирует
-    -- накопленную погрешность по сравнению с floor(halfT).
-    local off = math_floor(halfT + 0.5)
-
-    local tLeft  = roundedX - off
-    local tRight = roundedX + roundedW + off
-    local tTop   = roundedY - off
-    local tBot   = roundedY + roundedH + off
+    local tLeft  = math_floor(roundedX - halfT)
+    local tRight = math_floor(roundedX + roundedW + halfT)
+    local tTop   = math_floor(roundedY - halfT)
+    local tBot   = math_floor(roundedY + roundedH + halfT)
 
     -- TL Corner (Top-Left)
     lines.TL_H.From = V2(tLeft, roundedY);              lines.TL_H.To = V2(roundedX + roundedLen, roundedY)
