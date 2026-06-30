@@ -1,5 +1,5 @@
 --!nocheck
--- Loader: трекинг игроков, индивидуальные настройки ESP, очистка
+-- Loader (3D): угловой 3D-бокс + трассер, тимчек и цвет команды
 
 local storage = (getgenv and getgenv()) or shared
 if storage.ESP_Cleanup then
@@ -10,29 +10,30 @@ end
 local ESP = loadstring(game:HttpGet("https://raw.githubusercontent.com/RATWareLua/ESPlib/refs/heads/main/main.luau"))()
 
 -- 2. Загрузка модулей
-ESP:Import("CornerBox")
+ESP:Import("CornerBox3D")
 ESP:Import("Tracer")
 
 -- Базовый шаблон настроек (копируется на каждого игрока)
 local BASE_ESP_SETTINGS = {
-    CornerBox       = true,                    -- включить модуль CornerBox
+    CornerBox3D     = true,                    -- угловой 3D-бокс
     DynamicSize     = 0,                       -- 0 = статичный бокс фикс. размера
-    SizeOverride    = Vector3.new(4, 6.9, 4),  -- габариты бокса; убрать -> бокс по телу
+    UsePrimaryPart  = true,                    -- cf от HRP -> 3D-бокс ориентируется по игроку
+    SizeOverride    = Vector3.new(4, 6.9, 4),  -- габариты бокса
     BoxColor        = Color3.fromRGB(0, 255, 120),
-    BoxThickness    = 2.5,
     BoxTransparency = 1,
-    CornerScale     = 0.25,                    -- длина уголка как доля ширины
-    TracerThickness = 1.5,                     -- толщина трассера
-    TracerOrigin    = "mouse",                 -- от курсора ("bottom"/"top"/"center"/"mouse")
+    Box3DThickness  = 1.5,                      -- толщина рёбер 3D-бокса
+    Corner3DScale   = 0.3,                      -- длина угловых скобок (доля ребра)
+    TracerThickness = 1.5,                      -- толщина трассера
+    TracerOrigin    = "mouse",                  -- "bottom"/"top"/"center"/"mouse"
     MinBoxSize      = 4,
     MaxDistance     = 10000,
     -- TracerColor не задаём -> трассер берёт BoxColor (цвет команды)
 }
 
--- Поведение тимчека и цвета (A: различение команд, B: подсветка цветом команды)
+-- Поведение тимчека и цвета
 local CONFIG = {
-    UseTeamColor = true,                        -- B: красить бокс в реальный цвет команды
-    TeamCheck    = true,                        -- A: различать своих и чужих
+    UseTeamColor = true,                        -- красить бокс/трассер в реальный цвет команды
+    TeamCheck    = true,                        -- различать своих и чужих
     HideAllies   = false,                       -- true -> не рисовать союзников; трассер только врагам
     Tracer       = true,                        -- мастер-вкл трассера
     AllyColor    = Color3.fromRGB(0, 170, 255), -- цвет своих  (когда UseTeamColor = false)
@@ -61,7 +62,7 @@ local function isAlly(plr)
     return plr.Team ~= nil and plr.Team == LocalPlayer.Team
 end
 
--- Цвет бокса для игрока:
+-- Цвет бокса/трассера для игрока:
 --   UseTeamColor -> реальный цвет его команды (plr.TeamColor)
 --   иначе TeamCheck -> свой/враг по фикс. цветам из CONFIG
 --   иначе -> базовый BoxColor
@@ -75,9 +76,8 @@ local function resolveBoxColor(plr)
     return BASE_ESP_SETTINGS.BoxColor
 end
 
--- Применяет цвет и видимость к активному ESP игрока. Зовётся при спавне и при
--- смене команды: новый цвет линий подхватит CornerBox своим dirty-check, а
--- Enabled управляет показом союзников.
+-- Применяет цвет, видимость и трассер к активному ESP игрока. Зовётся при
+-- спавне и при смене команды (цвет линий подхватят модули своим dirty-check).
 local function applyTeamState(track, plr)
     if not track.ActiveESP then return end
     local hideAlly = CONFIG.TeamCheck and CONFIG.HideAllies and isAlly(plr)
@@ -120,7 +120,7 @@ local function AddPlayer(plr)
         local playerSettings = copyTable(BASE_ESP_SETTINGS)
         track.ActiveESP = ESP:Add(char, playerSettings)
 
-        -- A + B: тимчек + цвет команды (далее обновляется по сигналу смены Team)
+        -- Тимчек + цвет команды + трассер (далее обновляется по сигналу смены Team)
         applyTeamState(track, plr)
     end
 
@@ -142,14 +142,14 @@ end
 for _, plr in ipairs(Players:GetPlayers()) do
     local ok, err = pcall(AddPlayer, plr)
     if not ok then
-        warn(string.format("[ESP Loader] Ошибка инициализации игрока '%s': %s", plr.Name, tostring(err)))
+        warn(string.format("[ESP Loader 3D] Ошибка инициализации игрока '%s': %s", plr.Name, tostring(err)))
     end
 end
 
 local playerAddedConn = Players.PlayerAdded:Connect(function(plr)
     local ok, err = pcall(AddPlayer, plr)
     if not ok then
-        warn(string.format("[ESP Loader] Ошибка подключения нового игрока '%s': %s", plr.Name, tostring(err)))
+        warn(string.format("[ESP Loader 3D] Ошибка подключения нового игрока '%s': %s", plr.Name, tostring(err)))
     end
 end)
 table.insert(globalConnections, playerAddedConn)

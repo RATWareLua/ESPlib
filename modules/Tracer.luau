@@ -1,7 +1,9 @@
 --!nocheck
 -- Module: Tracer.luau
--- Линия от края экрана к низу бокса цели. Полностью на контракте ядра
--- (renderData + espObj.Instance), правок в main.luau не требует.
+-- Линия от курсора/центра к цели. Когда цель на экране — к низу бокса; когда
+-- вне экрана/за спиной — к точке у края экрана в направлении цели (метод arws,
+-- через горизонтальный XZ-фрейм, т.к. WorldToViewportPoint за камерой даёт мусор).
+-- Опирается на renderData.WorldCF (ядро отдаёт его и для off-screen целей).
 
 local Tracer = {
     Priority = 20,            -- рисуется после бокса
@@ -10,10 +12,14 @@ local Tracer = {
 
 local DRAWING = Drawing.new
 local V2 = Vector2.new
+local V3 = Vector3.new
+local CF = CFrame.new
 
 local cloneref = cloneref or function(o) return o end
 local Workspace = cloneref(game:GetService("Workspace"))
 local UserInputService = cloneref(game:GetService("UserInputService"))
+local Players = cloneref(game:GetService("Players"))
+local LocalPlayer = Players.LocalPlayer
 
 -- Камера держится свежей через сигнал, а не читается каждый кадр
 local Camera = Workspace.CurrentCamera
@@ -35,6 +41,26 @@ local function originPoint(vp, mode)
     else -- "bottom" (по умолчанию)
         return vp.X * 0.5, vp.Y
     end
+end
+
+-- Точка-цель для off-screen/за-спиной случая: направление считается в горизонтальном
+-- XZ-фрейме у игрока, смотрящем на камеру (как в arws) — корректно на все 360°.
+-- Возвращает точку на круге радиусом radius от центра экрана, или nil.
+local function offscreenPoint(targetPos, radius)
+    local char = LocalPlayer.Character
+    local root = char and char.PrimaryPart
+    if not root then return nil end
+
+    local rootP = root.Position
+    local camP = Camera.CFrame.Position
+    local rel = CF(V3(rootP.X, camP.Y, rootP.Z), camP):PointToObjectSpace(targetPos)
+    local flat = V2(rel.X, rel.Z)
+    if flat.Magnitude < 0.01 then return nil end
+
+    local dir = flat.Unit
+    local center = Camera.ViewportSize * 0.5
+    local p = center - dir * radius
+    return p.X, p.Y
 end
 
 function Tracer.Init(espObj)
@@ -59,8 +85,10 @@ function Tracer.Update(espObj, renderData)
     if not line then return end
 
     local cache = espObj.CustomData.Tracer
+    local cf = renderData.WorldCF
 
-    if not renderData.OnScreen or not Camera then
+    -- Реально скрыт (выключен / вне радиуса / нет родителя): WorldCF отсутствует
+    if not cf or not Camera then
         if cache.Shown then
             line.Visible = false
             cache.Shown = false
@@ -70,15 +98,27 @@ function Tracer.Update(espObj, renderData)
 
     local set = espObj.Settings
 
-    -- Геометрия: низ экрана -> низ-центр бокса (≈ ноги цели)
-    local ox, oy = originPoint(Camera.ViewportSize, set.TracerOrigin)
-    local tx = renderData.X + renderData.W * 0.5
-    local ty = renderData.Y + renderData.H
+    -- Точка цели: на экране — низ бокса; вне экрана/за спиной — индикатор у края
+    local tx, ty
+    if renderData.OnScreen then
+        tx = renderData.X + renderData.W * 0.5
+        ty = renderData.Y + renderData.H
+    else
+        tx, ty = offscreenPoint(cf.Position, set.TracerEdgeRadius or 300)
+        if not tx then
+            if cache.Shown then
+                line.Visible = false
+                cache.Shown = false
+            end
+            return
+        end
+    end
 
+    local ox, oy = originPoint(Camera.ViewportSize, set.TracerOrigin)
     line.From = V2(ox, oy)
     line.To = V2(tx, ty)
 
-    -- Свойства — через dirty-check (как в CornerBox)
+    -- Свойства — через dirty-check
     local color = set.TracerColor or set.BoxColor or DEFAULT_COLOR
     local thickness = set.TracerThickness or 1.5
     local transp = set.TracerTransparency or 1

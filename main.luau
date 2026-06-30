@@ -250,6 +250,20 @@ local function HideObject(espObj)
     end
 end
 
+local function CallUpdates(espObj, rd, safe)
+    local list = espObj.UpdateList
+    if safe then
+        for i = 1, #list do
+            local ok, err = pcall(list[i].Update, espObj, rd)
+            if not ok then warn(string.format("[ESP Module Error] %s", tostring(err))) end
+        end
+    else
+        for i = 1, #list do
+            list[i].Update(espObj, rd)
+        end
+    end
+end
+
 -- ════════════════════════════════════════════════════════════════════════
 --  Публичный API
 -- ════════════════════════════════════════════════════════════════════════
@@ -424,34 +438,28 @@ function ESPLibrary:Start()
                     if distSq > maxD * maxD then
                         HideObject(espObj)
                     else
+                        local rd = espObj.RenderData
+                        rd.Distance = math_sqrt(distSq)
+                        -- Уже разрешённый мировой трансформ цели — для модулей,
+                        -- которым нужна 3D-геометрия (3D-бокс, скелет) или off-screen
+                        -- индикаторы (трассер/стрелки). Отдаётся даже когда бокс вне
+                        -- экрана/за камерой — чтобы такие модули не пропадали.
+                        rd.WorldCF = cf
+                        rd.WorldSize = size
+
                         local isStatic = (settings.DynamicSize == 0)
                         local ok, x, y, w, h = ProjectVolume(wtvp, camera, camCF, cf, size, isStatic, settings.MinBoxSize)
 
                         if ok then
-                            local rd = espObj.RenderData
                             rd.OnScreen = true
-                            rd.Distance = math_sqrt(distSq)
                             rd.X, rd.Y, rd.W, rd.H = x, y, w, h
-                            -- Уже разрешённый мировой трансформ цели — для модулей,
-                            -- которым нужна 3D-геометрия (3D-бокс, скелет, свои якоря).
-                            -- Они сами проецируют нужные точки; ядро не считает лишнего.
-                            rd.WorldCF = cf
-                            rd.WorldSize = size
-
-                            local list = espObj.UpdateList
-                            if safe then
-                                for i = 1, #list do
-                                    local good, err = pcall(list[i].Update, espObj, rd)
-                                    if not good then warn(string.format("[ESP Module Error] %s", tostring(err))) end
-                                end
-                            else
-                                for i = 1, #list do
-                                    list[i].Update(espObj, rd)
-                                end
-                            end
                         else
-                            HideObject(espObj)
+                            -- Цель вне экрана/за спиной, но жива и в радиусе. Бокс-модули
+                            -- прячутся по OnScreen, off-screen модули рисуют по WorldCF.
+                            rd.OnScreen = false
                         end
+
+                        CallUpdates(espObj, rd, safe)
                     end
                 end
             end
